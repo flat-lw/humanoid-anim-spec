@@ -20,14 +20,16 @@ module HumanoidAnim.Output.Muscle
   , quaternionToMuscles
   , musclesToQuaternion
   , boneToMuscles
+  , positionToMuscles
+  , fetusDirection
   ) where
 
-import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
-import Linear (V3(..), Quaternion(..), axisAngle)
-import qualified Linear.Quaternion as Q
+import Linear (V3(..), Quaternion(..))
 
 import HumanoidAnim.Skeleton.Bones (HumanoidBone(..))
+import HumanoidAnim.Skeleton.Config (defaultSkeletonConfig, buildSkeleton, Transform(..), Skeleton(..))
+import HumanoidAnim.Skeleton.Transform (computeRotations)
 
 -- | Muscle value (normalized to -1.0 to 1.0)
 type MuscleValue = Float
@@ -215,8 +217,8 @@ musclePropertyName mid = case mid of
   LeftUpperLegFrontBack -> "Left Upper Leg Front-Back"
   LeftUpperLegInOut -> "Left Upper Leg In-Out"
   LeftUpperLegTwistInOut -> "Left Upper Leg Twist In-Out"
-  LeftLegStretch -> "Left Leg Stretch"
-  LeftLegTwistInOut -> "Left Leg Twist In-Out"
+  LeftLegStretch -> "Left Lower Leg Stretch"
+  LeftLegTwistInOut -> "Left Lower Leg Twist In-Out"
   LeftFootUpDown -> "Left Foot Up-Down"
   LeftFootTwistInOut -> "Left Foot Twist In-Out"
   LeftToesUpDown -> "Left Toes Up-Down"
@@ -225,8 +227,8 @@ musclePropertyName mid = case mid of
   RightUpperLegFrontBack -> "Right Upper Leg Front-Back"
   RightUpperLegInOut -> "Right Upper Leg In-Out"
   RightUpperLegTwistInOut -> "Right Upper Leg Twist In-Out"
-  RightLegStretch -> "Right Leg Stretch"
-  RightLegTwistInOut -> "Right Leg Twist In-Out"
+  RightLegStretch -> "Right Lower Leg Stretch"
+  RightLegTwistInOut -> "Right Lower Leg Twist In-Out"
   RightFootUpDown -> "Right Foot Up-Down"
   RightFootTwistInOut -> "Right Foot Twist In-Out"
   RightToesUpDown -> "Right Toes Up-Down"
@@ -428,60 +430,89 @@ boneToMuscles bone = case bone of
 
 -- | Convert a quaternion rotation to muscle values for a bone
 -- Returns a list of (MuscleId, MuscleValue) pairs
+-- The rotation is computed relative to the Fetus Position reference rotation.
+-- In Unity Humanoid, muscle value 0 = Fetus Position
+-- The delta rotation from Fetus Position is converted to bone-local Euler angles,
+-- then mapped to muscle values.
+--
+-- Unity Humanoid Axis Conventions (left-handed coordinate system):
+--   DoF 0 = X-axis: Twist / Roll
+--   DoF 1 = Y-axis: Side / Tilt / In-Out
+--   DoF 2 = Z-axis: Front-Back / Stretch / Nod / Down-Up
+--
+-- Bone-specific axis meanings:
+--   Spine/Chest: X=Twist, Y=Left-Right, Z=Front-Back
+--   Neck/Head: X=Turn, Y=Tilt, Z=Nod
+--   UpperArm: X=Twist, Y=Front-Back, Z=Down-Up
+--   LowerArm: X=Twist, Z=Stretch (no Y)
+--   UpperLeg: X=Twist, Y=In-Out, Z=Front-Back
+--   LowerLeg: X=Twist, Z=Stretch (no Y)
 quaternionToMuscles :: HumanoidBone -> Quaternion Float -> [(MuscleId, MuscleValue)]
 quaternionToMuscles bone quat =
   let muscles = boneToMuscles bone
-      -- Extract euler angles from quaternion
-      (pitch, yaw, roll) = quaternionToEuler quat
+      -- Get Fetus Position reference rotation and compute delta
+      fetusQ = fetusRotation bone
+      -- deltaQ = currentQ * inverse(fetusQ) gives rotation from Fetus Position to current
+      deltaQ = quaternionMul quat (quaternionInverse fetusQ)
+      -- Extract euler angles from the delta quaternion
+      -- quaternionToEulerXYZ returns angles in Unity convention:
+      --   rotX = rotation around X-axis (Twist)
+      --   rotY = rotation around Y-axis (Side/In-Out)
+      --   rotZ = rotation around Z-axis (Front-Back/Stretch)
+      (rotX, rotY, rotZ) = quaternionToEulerXYZ deltaQ
+
   in case bone of
-    -- Spine bones: Front-Back = pitch, Left-Right = roll, Twist = yaw
-    Spine -> zipMuscles muscles [pitch, roll, yaw]
-    Chest -> zipMuscles muscles [pitch, roll, yaw]
-    UpperChest -> zipMuscles muscles [pitch, roll, yaw]
+    -- Spine bones: [Front-Back, Left-Right, Twist] = [Z, Y, X]
+    Spine -> zipMuscles muscles [rotZ, rotY, rotX]
+    Chest -> zipMuscles muscles [rotZ, rotY, rotX]
+    UpperChest -> zipMuscles muscles [rotZ, rotY, rotX]
 
-    -- Neck and Head
-    Neck -> zipMuscles muscles [pitch, roll, yaw]
-    Head -> zipMuscles muscles [pitch, roll, yaw]
-    Jaw -> zipMuscles muscles [pitch, yaw]
+    -- Neck and Head: [Nod, Tilt, Turn] = [Z, Y, X]
+    Neck -> zipMuscles muscles [rotZ, rotY, rotX]
+    Head -> zipMuscles muscles [rotZ, rotY, rotX]
+    Jaw -> zipMuscles muscles [rotZ, rotY]
 
-    -- Eyes
-    LeftEye -> zipMuscles muscles [pitch, yaw]
-    RightEye -> zipMuscles muscles [pitch, yaw]
+    -- Eyes: [Down-Up, In-Out] = [Z, Y]
+    LeftEye -> zipMuscles muscles [rotZ, rotY]
+    RightEye -> zipMuscles muscles [rotZ, rotY]
 
-    -- Shoulders: Down-Up, Front-Back
-    LeftShoulder -> zipMuscles muscles [roll, pitch]
-    RightShoulder -> zipMuscles muscles [roll, pitch]
+    -- Shoulders: [Down-Up, Front-Back] = [Z, Y]
+    LeftShoulder -> zipMuscles muscles [rotZ, rotY]
+    RightShoulder -> zipMuscles muscles [rotZ, rotY]
 
-    -- Upper Arm: Down-Up, Front-Back, Twist
-    LeftUpperArm -> zipMuscles muscles [roll, pitch, yaw]
-    RightUpperArm -> zipMuscles muscles [roll, pitch, yaw]
+    -- Upper Arm: [Down-Up, Front-Back, Twist] = [Z, Y, X]
+    -- Note: Right side may need sign flip for symmetry
+    LeftUpperArm -> zipMuscles muscles [rotZ, rotY, rotX]
+    RightUpperArm -> zipMuscles muscles [rotZ, rotY, rotX]
 
-    -- Lower Arm: Stretch (bend), Twist
-    LeftLowerArm -> zipMuscles muscles [pitch, yaw]
-    RightLowerArm -> zipMuscles muscles [pitch, yaw]
+    -- Lower Arm (Forearm): [Stretch, Twist] = [Z, X]
+    -- Stretch range: -80° ~ 5° (negative = bent, positive = extended)
+    LeftLowerArm -> zipMuscles muscles [rotZ, rotX]
+    RightLowerArm -> zipMuscles muscles [rotZ, rotX]
 
-    -- Hand: Down-Up, In-Out
-    LeftHand -> zipMuscles muscles [pitch, roll]
-    RightHand -> zipMuscles muscles [pitch, roll]
+    -- Hand: [Down-Up, In-Out] = [Z, Y]
+    LeftHand -> zipMuscles muscles [rotZ, rotY]
+    RightHand -> zipMuscles muscles [rotZ, rotY]
 
-    -- Upper Leg: Front-Back, In-Out, Twist
-    LeftUpperLeg -> zipMuscles muscles [pitch, roll, yaw]
-    RightUpperLeg -> zipMuscles muscles [pitch, roll, yaw]
+    -- Upper Leg: [Front-Back, In-Out, Twist] = [Z, Y, X]
+    LeftUpperLeg -> zipMuscles muscles [rotZ, rotY, rotX]
+    RightUpperLeg -> zipMuscles muscles [rotZ, rotY, rotX]
 
-    -- Lower Leg: Stretch, Twist
-    LeftLowerLeg -> zipMuscles muscles [pitch, yaw]
-    RightLowerLeg -> zipMuscles muscles [pitch, yaw]
+    -- Lower Leg: [Stretch, Twist] = [Z, X]
+    -- Stretch range: -80° ~ 5°
+    LeftLowerLeg -> zipMuscles muscles [rotZ, rotX]
+    RightLowerLeg -> zipMuscles muscles [rotZ, rotX]
 
-    -- Foot: Up-Down, Twist
-    LeftFoot -> zipMuscles muscles [pitch, yaw]
-    RightFoot -> zipMuscles muscles [pitch, yaw]
+    -- Foot: [Up-Down, Twist] = [Z, X]
+    LeftFoot -> zipMuscles muscles [rotZ, rotX]
+    RightFoot -> zipMuscles muscles [rotZ, rotX]
 
-    -- Toes: Up-Down only
-    LeftToes -> zipMuscles muscles [pitch]
-    RightToes -> zipMuscles muscles [pitch]
+    -- Toes: [Up-Down] = [Z]
+    LeftToes -> zipMuscles muscles [rotZ]
+    RightToes -> zipMuscles muscles [rotZ]
 
-    -- Fingers: use simplified mapping
-    _ -> zipMuscles muscles (replicate (length muscles) pitch)
+    -- Fingers: use Z-axis (stretch/curl)
+    _ -> zipMuscles muscles (replicate (length muscles) rotZ)
   where
     zipMuscles :: [MuscleId] -> [Float] -> [(MuscleId, MuscleValue)]
     zipMuscles mids angles = zipWith toMuscle mids (angles ++ repeat 0)
@@ -490,18 +521,34 @@ quaternionToMuscles bone quat =
     toMuscle mid angle =
       let MuscleRange minA maxA = muscleDefaultRange mid
           -- Convert angle (in degrees) to muscle value (-1 to 1)
-          range = maxA - minA
-          center = (maxA + minA) / 2
-          normalized = if range > 0
-                       then clampF (-1) 1 ((angle - center) / (range / 2))
-                       else 0
+          -- For "Stretch" muscles (min=0), use 0-to-1 range instead of -1-to-1
+          normalized = if isStretchMuscle mid
+                       then -- Stretch: 0 = min angle, 1 = max angle
+                            let range = maxA - minA
+                            in if range > 0
+                               then clampF 0 1 ((angle - minA) / range)
+                               else 0
+                       else -- Normal: center = 0, map to -1..1
+                            let range = maxA - minA
+                                center = (maxA + minA) / 2
+                            in if range > 0
+                               then clampF (-1) 1 ((angle - center) / (range / 2))
+                               else 0
       in (mid, normalized)
+
+    -- Check if muscle is a "Stretch" type (uses 0-1 range instead of -1-1)
+    isStretchMuscle :: MuscleId -> Bool
+    isStretchMuscle m = case m of
+      LeftForearmStretch -> True
+      RightForearmStretch -> True
+      LeftLegStretch -> True
+      RightLegStretch -> True
+      _ -> False
 
 -- | Convert muscle values back to quaternion
 musclesToQuaternion :: HumanoidBone -> [(MuscleId, MuscleValue)] -> Quaternion Float
 musclesToQuaternion bone muscleValues =
   let muscleMap = Map.fromList muscleValues
-      muscles = boneToMuscles bone
       getAngle mid = case Map.lookup mid muscleMap of
         Just v ->
           let MuscleRange minA maxA = muscleDefaultRange mid
@@ -519,6 +566,7 @@ musclesToQuaternion bone muscleValues =
     _ -> Quaternion 1 (V3 0 0 0)
 
 -- | Convert quaternion to Euler angles (pitch, yaw, roll) in degrees
+-- Uses ZYX rotation order (aerospace convention)
 quaternionToEuler :: Quaternion Float -> (Float, Float, Float)
 quaternionToEuler (Quaternion w (V3 x y z)) =
   let -- Roll (x-axis rotation)
@@ -538,6 +586,29 @@ quaternionToEuler (Quaternion w (V3 x y z)) =
       yaw = atan2 siny_cosp cosy_cosp
 
   in (toDegrees pitch, toDegrees yaw, toDegrees roll)
+
+-- | Convert quaternion to Euler angles in XYZ order (Unity convention)
+-- Returns (rotX, rotY, rotZ) in degrees
+-- Unity uses left-handed coordinate system with XYZ intrinsic rotation order
+quaternionToEulerXYZ :: Quaternion Float -> (Float, Float, Float)
+quaternionToEulerXYZ (Quaternion w (V3 x y z)) =
+  let -- Rotation around X-axis (Twist/Roll)
+      sinX = 2 * (w * x - y * z)
+      cosX = 1 - 2 * (x * x + z * z)
+      rotX = atan2 sinX cosX
+
+      -- Rotation around Y-axis (Side/Tilt)
+      sinY = 2 * (w * y + x * z)
+      rotY = if abs sinY >= 1
+             then signum sinY * (pi / 2)
+             else asin sinY
+
+      -- Rotation around Z-axis (Front-Back/Stretch)
+      sinZ = 2 * (w * z - x * y)
+      cosZ = 1 - 2 * (y * y + z * z)
+      rotZ = atan2 sinZ cosZ
+
+  in (toDegrees rotX, toDegrees rotY, toDegrees rotZ)
 
 -- | Convert Euler angles (pitch, yaw, roll) in degrees to quaternion
 eulerToQuaternion :: Float -> Float -> Float -> Quaternion Float
@@ -571,3 +642,266 @@ toRadians deg = deg * pi / 180
 -- | Clamp a value between min and max
 clampF :: Float -> Float -> Float -> Float
 clampF lo hi x = max lo (min hi x)
+
+-- | Quaternion inverse (conjugate for unit quaternions)
+quaternionInverse :: Quaternion Float -> Quaternion Float
+quaternionInverse (Quaternion w (V3 x y z)) = Quaternion w (V3 (-x) (-y) (-z))
+
+-- | Quaternion multiplication
+quaternionMul :: Quaternion Float -> Quaternion Float -> Quaternion Float
+quaternionMul (Quaternion w1 (V3 x1 y1 z1)) (Quaternion w2 (V3 x2 y2 z2)) =
+  Quaternion (w1*w2 - x1*x2 - y1*y2 - z1*z2)
+             (V3 (w1*x2 + x1*w2 + y1*z2 - z1*y2)
+                 (w1*y2 - x1*z2 + y1*w2 + z1*x2)
+                 (w1*z2 + x1*y2 - y1*x2 + z1*w2))
+
+-- | Fetus Position reference rotations computed from the default skeleton
+-- This uses the exact same computation as Animation.hs uses for animation frames
+-- In Unity Humanoid, muscle value 0 = Fetus Position
+fetusRotations :: Map.Map HumanoidBone (Quaternion Float)
+fetusRotations =
+  let skeleton = buildSkeleton defaultSkeletonConfig
+      positions = Map.map transformPosition (skeletonRestPose skeleton)
+      fullPose = computeRotations skeleton positions Map.empty
+  in Map.map transformRotation fullPose
+
+-- | Get Fetus Position rotation for a specific bone
+fetusRotation :: HumanoidBone -> Quaternion Float
+fetusRotation bone = Map.findWithDefault identityQ bone fetusRotations
+  where
+    identityQ = Quaternion 1 (V3 0 0 0)
+
+-- | Fetus Position reference positions computed from the default skeleton
+fetusPositions :: Map.Map HumanoidBone (V3 Float)
+fetusPositions =
+  let skeleton = buildSkeleton defaultSkeletonConfig
+  in Map.map transformPosition (skeletonRestPose skeleton)
+
+-- | Get Fetus Position direction for a bone (from parent to child)
+--
+-- For bones like RightUpperArm, this returns the direction from shoulder to elbow
+-- in Fetus Position. This is used as the reference for muscle calculations.
+fetusDirection :: HumanoidBone -> V3 Float
+fetusDirection bone =
+  let positions = fetusPositions
+      childBone = getChildForMuscle bone
+  in case (Map.lookup bone positions, Map.lookup childBone positions) of
+       (Just parentPos, Just childPos) -> childPos - parentPos
+       _ -> V3 0 (-1) 0  -- Default: pointing down
+  where
+    -- Get the child bone used for muscle direction calculation
+    getChildForMuscle :: HumanoidBone -> HumanoidBone
+    getChildForMuscle b = case b of
+      RightUpperArm -> RightLowerArm
+      LeftUpperArm  -> LeftLowerArm
+      RightUpperLeg -> RightLowerLeg
+      LeftUpperLeg  -> LeftLowerLeg
+      RightLowerArm -> RightHand
+      LeftLowerArm  -> LeftHand
+      RightLowerLeg -> RightFoot
+      LeftLowerLeg  -> LeftFoot
+      _ -> b  -- Default to self
+
+-- | Convert bone positions directly to muscle values
+--
+-- This function calculates muscle values geometrically from bone positions,
+-- avoiding the quaternion/euler conversion issues that can occur with lookRotation.
+--
+-- For each bone type, it computes the relevant angles directly from the
+-- direction vector between parent and child bones.
+positionToMuscles
+  :: HumanoidBone           -- ^ Target bone
+  -> V3 Float               -- ^ Parent bone position (e.g., shoulder for upper arm)
+  -> V3 Float               -- ^ Child bone position (e.g., elbow for upper arm)
+  -> V3 Float               -- ^ Fetus position direction (reference)
+  -> [(MuscleId, MuscleValue)]
+positionToMuscles bone parentPos childPos fetusDir =
+  let dir = childPos - parentPos
+  in case bone of
+    -- Right Upper Arm
+    RightUpperArm -> computeUpperArmMuscles RightArmDownUp RightArmFrontBack RightArmTwistInOut dir fetusDir True
+    -- Left Upper Arm
+    LeftUpperArm -> computeUpperArmMuscles LeftArmDownUp LeftArmFrontBack LeftArmTwistInOut dir fetusDir False
+    -- Right Upper Leg
+    RightUpperLeg -> computeUpperLegMuscles RightUpperLegFrontBack RightUpperLegInOut RightUpperLegTwistInOut dir fetusDir True
+    -- Left Upper Leg
+    LeftUpperLeg -> computeUpperLegMuscles LeftUpperLegFrontBack LeftUpperLegInOut LeftUpperLegTwistInOut dir fetusDir False
+    -- For other bones, fall back to quaternion-based calculation
+    _ -> []
+
+-- | Compute Upper Arm muscles from direction vector
+--
+-- Unity Humanoid Arm muscles:
+--   - Down-Up: Rotation in the sagittal plane (side view). Up = positive, Down = negative
+--   - Front-Back: Rotation in the transverse plane (top view). Back = positive, Front = negative
+--   - Twist: Rotation around arm axis (not determinable from position alone)
+--
+-- The calculation uses the angle between the current direction and Fetus position,
+-- projected onto the relevant plane.
+computeUpperArmMuscles
+  :: MuscleId  -- ^ Down-Up muscle ID
+  -> MuscleId  -- ^ Front-Back muscle ID
+  -> MuscleId  -- ^ Twist muscle ID
+  -> V3 Float  -- ^ Current direction (parent to child)
+  -> V3 Float  -- ^ Fetus position direction (reference)
+  -> Bool      -- ^ Is right side
+  -> [(MuscleId, MuscleValue)]
+computeUpperArmMuscles downUpId frontBackId twistId dir fetusDir isRight =
+  let -- Normalize directions
+      dirNorm = normalizeV3 dir
+      fetusNorm = normalizeV3 fetusDir
+
+      V3 dx dy dz = dirNorm
+      V3 fdx fdy fdz = fetusNorm
+
+      -- Down-Up: measured in the sagittal plane (XY plane for right arm, looking from side)
+      -- Project both vectors onto the plane perpendicular to Z, then measure angle
+      -- For arms, "up" means Y increases relative to Fetus position
+      -- We measure the Y component difference and convert to angle
+
+      -- Calculate angle from Fetus direction in the "up-down" axis
+      -- Using the signed angle between vectors projected onto the lateral plane
+      -- For right arm: lateral axis is roughly X
+      -- Down-Up rotation happens around the X axis (for right arm looking from right side)
+
+      -- Simplified approach: measure the change in Y component relative to Fetus
+      -- and scale by the expected range
+
+      -- The Y component of the normalized direction tells us how much it points up/down
+      -- Fetus Y component is the reference (usually negative, pointing down)
+      -- If current Y > Fetus Y, arm is more "up", muscle is positive
+
+      -- Calculate the angle difference using atan2 for better precision
+      -- Project onto the sagittal plane (the plane containing the lateral axis and vertical)
+      -- For right arm, this is approximately the YZ plane viewed from X
+
+      -- Angle in sagittal plane (Y-"forward" plane, where forward depends on arm orientation)
+      -- Use cross product to get signed angle
+      crossDownUp = crossV3 fetusNorm dirNorm
+
+      -- The X component of the cross product tells us rotation around X axis (pitch/down-up)
+      -- For right arm, positive cross.x means rotating "up"
+      -- The magnitude of the cross product is sin(angle), dot product is cos(angle)
+      dotProduct = dotV3 fetusNorm dirNorm
+      sinAngle = normV3 crossDownUp
+      angleRad = atan2 sinAngle (max (-1) (min 1 dotProduct))
+      angleDeg = angleRad * 180 / pi
+
+      -- Determine sign: is it up or down?
+      -- If Y increased (arm went up), it's positive
+      -- Compare Y components
+      deltaY = dy - fdy
+      signedAngleDU = if deltaY >= 0 then angleDeg else (-angleDeg)
+
+      -- Map to muscle range
+      MuscleRange minDU maxDU = muscleDefaultRange downUpId
+      rangeDU = maxDU - minDU
+      -- The muscle range is asymmetric: -60 to +100
+      -- Muscle = 0 at Fetus position
+      -- Muscle = +1 at max up (+100 degrees from Fetus)
+      -- Muscle = -1 at max down (-60 degrees from Fetus)
+      downUpMuscle = if signedAngleDU >= 0
+                     then clampF 0 1 (signedAngleDU / maxDU)
+                     else clampF (-1) 0 (signedAngleDU / abs minDU)
+
+      -- Front-Back: angle in horizontal (XZ) plane
+      -- Measured as the change in the horizontal direction
+      -- Front = negative (Z increases), Back = positive (Z decreases)
+      currentAngleXZ = atan2 dz dx * 180 / pi
+      fetusAngleXZ = atan2 fdz fdx * 180 / pi
+
+      -- Normalize angle difference to -180..180
+      rawDeltaFB = currentAngleXZ - fetusAngleXZ
+      deltaFrontBack = if rawDeltaFB > 180 then rawDeltaFB - 360
+                       else if rawDeltaFB < (-180) then rawDeltaFB + 360
+                       else rawDeltaFB
+
+      -- For right arm: positive delta (rotating outward/back) = positive muscle
+      -- Need to flip sign based on which side
+      signedDeltaFB = if isRight then (-deltaFrontBack) else deltaFrontBack
+
+      MuscleRange minFB maxFB = muscleDefaultRange frontBackId
+      rangeFB = maxFB - minFB
+      frontBackMuscle = clampF (-1) 1 (signedDeltaFB / (rangeFB / 2))
+
+      -- Twist: cannot be determined from position alone, set to 0
+      twistMuscle = 0
+
+  in [ (downUpId, downUpMuscle)
+     , (frontBackId, frontBackMuscle)
+     , (twistId, twistMuscle)
+     ]
+
+-- | Normalize a V3 Float vector
+normalizeV3 :: V3 Float -> V3 Float
+normalizeV3 v@(V3 x y z) =
+  let len = sqrt (x*x + y*y + z*z)
+  in if len < 0.0001 then V3 0 0 0 else V3 (x/len) (y/len) (z/len)
+
+-- | Dot product of two V3 Float vectors
+dotV3 :: V3 Float -> V3 Float -> Float
+dotV3 (V3 x1 y1 z1) (V3 x2 y2 z2) = x1*x2 + y1*y2 + z1*z2
+
+-- | Cross product of two V3 Float vectors
+crossV3 :: V3 Float -> V3 Float -> V3 Float
+crossV3 (V3 x1 y1 z1) (V3 x2 y2 z2) =
+  V3 (y1*z2 - z1*y2) (z1*x2 - x1*z2) (x1*y2 - y1*x2)
+
+-- | Norm (length) of a V3 Float vector
+normV3 :: V3 Float -> Float
+normV3 (V3 x y z) = sqrt (x*x + y*y + z*z)
+
+-- | Compute Upper Leg muscles from direction vector
+--
+-- Unity Humanoid Leg muscles:
+--   - Front-Back: Leg forward = positive, backward = negative
+--   - In-Out: Leg inward = positive, outward = negative
+--   - Twist: Rotation around leg axis
+computeUpperLegMuscles
+  :: MuscleId  -- ^ Front-Back muscle ID
+  -> MuscleId  -- ^ In-Out muscle ID
+  -> MuscleId  -- ^ Twist muscle ID
+  -> V3 Float  -- ^ Current direction (parent to child)
+  -> V3 Float  -- ^ Fetus position direction (reference)
+  -> Bool      -- ^ Is right side
+  -> [(MuscleId, MuscleValue)]
+computeUpperLegMuscles frontBackId inOutId twistId dir fetusDir isRight =
+  let V3 dx dy dz = dir
+      V3 fdx fdy fdz = fetusDir
+
+      -- Front-Back: angle from vertical in sagittal plane (XZ when viewed from side)
+      -- Leg pointing forward = positive angle
+      verticalDist = abs dy
+      currentAngleZ = if verticalDist < 0.0001
+                      then if dz >= 0 then 90 else (-90)
+                      else atan2 dz verticalDist * 180 / pi
+
+      fetusVerticalDist = abs fdy
+      fetusAngleZ = if fetusVerticalDist < 0.0001
+                    then if fdz >= 0 then 90 else (-90)
+                    else atan2 fdz fetusVerticalDist * 180 / pi
+
+      deltaFrontBack = currentAngleZ - fetusAngleZ
+
+      MuscleRange minFB maxFB = muscleDefaultRange frontBackId
+      rangeFB = maxFB - minFB
+      frontBackMuscle = clampF (-1) 1 (deltaFrontBack / (rangeFB / 2))
+
+      -- In-Out: angle from vertical in frontal plane
+      -- Right leg: outward (positive X) = negative muscle
+      -- Left leg: outward (negative X) = negative muscle
+      currentAngleX = atan2 dx verticalDist * 180 / pi
+      fetusAngleX = atan2 fdx fetusVerticalDist * 180 / pi
+      deltaInOut = currentAngleX - fetusAngleX
+      -- Flip sign for proper In-Out direction
+      inOutMuscle = if isRight
+                    then clampF (-1) 1 (-deltaInOut / 60)
+                    else clampF (-1) 1 (deltaInOut / 60)
+
+      -- Twist: cannot be determined from position alone
+      twistMuscle = 0
+
+  in [ (frontBackId, frontBackMuscle)
+     , (inOutId, inOutMuscle)
+     , (twistId, twistMuscle)
+     ]

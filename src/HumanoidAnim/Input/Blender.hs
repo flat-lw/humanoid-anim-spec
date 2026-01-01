@@ -166,7 +166,7 @@ blenderToConfig anim = do
            { configName = blenderName anim
            , configDuration = duration
            , configFixed =
-               [ FixedBoneConfig "Hips" (V3 0 1 0)  -- Default fixed bones
+               [ FixedBoneConfig "Hips" (V3 0 1 0) Nothing  -- Default fixed bones
                ]
            , configEffector = EffectorConfig
                { effectorBone = T.pack (show humanBone)

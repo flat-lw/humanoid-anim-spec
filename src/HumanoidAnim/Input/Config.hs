@@ -87,6 +87,8 @@ data FixedBoneConfig = FixedBoneConfig
     -- ^ Bone name
   , fixedPosition :: V3 Float
     -- ^ Fixed position [x, y, z]
+  , fixedRotation :: Maybe (Quaternion Float)
+    -- ^ Optional fixed rotation [x, y, z, w]
   } deriving stock (Show, Eq)
 
 -- | Effector configuration
@@ -215,9 +217,11 @@ instance FromJSON FixedBoneConfig where
   parseJSON = withObject "FixedBoneConfig" $ \o -> do
     bone <- o .: "bone"
     pos <- o .: "position"
+    rotMaybe <- o .:? "rotation"
     pure FixedBoneConfig
       { fixedBone = bone
       , fixedPosition = parseV3 pos
+      , fixedRotation = parseQuatMaybe rotMaybe
       }
 
 instance FromJSON EffectorConfig where
@@ -345,10 +349,14 @@ instance ToJSON AnimationConfig where
     ]
 
 instance ToJSON FixedBoneConfig where
-  toJSON cfg = object
+  toJSON cfg = object $
     [ "bone" .= fixedBone cfg
     , "position" .= v3ToList (fixedPosition cfg)
-    ]
+    ] ++ rotField
+    where
+      rotField = case fixedRotation cfg of
+        Just q -> ["rotation" .= quatToList q]
+        Nothing -> []
 
 instance ToJSON EffectorConfig where
   toJSON cfg = object

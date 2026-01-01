@@ -127,11 +127,14 @@ generateFromConfig config = do
   -- Parse loop mode
   let loopMode = parseLoopMode (settingsLoop (configSettings config))
 
+  -- Parse solver type
+  let solverType = parseSolverType (settingsSolver (configSettings config))
+
   -- Generate animation
   let genConfig = GenerationConfig
         { genFrameRate = settingsFrameRate (configSettings config)
         , genFrameCount = settingsFrameCount (configSettings config)
-        , genSolverType = FABRIKSolver
+        , genSolverType = solverType
         , genOptimize = outOptimize (configOutput config)
         }
 
@@ -160,3 +163,13 @@ parseLoopMode txt = case T.toLower txt of
   "pingpong" -> PingPong
   "ping-pong" -> PingPong
   _ -> Once
+
+-- | Parse solver type from text
+parseSolverType :: T.Text -> SolverType
+parseSolverType txt = case T.toLower txt of
+  "twobone"   -> TwoBoneSolver
+  "two-bone"  -> TwoBoneSolver
+  "two_bone"  -> TwoBoneSolver
+  "fabrik"    -> FABRIKSolver
+  "ccd"       -> CCDSolver
+  _           -> TwoBoneSolver  -- Default to TwoBone for limb IK

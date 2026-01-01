@@ -27,6 +27,7 @@ import Linear (V3(..), Quaternion(..))
 import HumanoidAnim.Error
 import HumanoidAnim.IK.Core as IKCore
 import HumanoidAnim.IK.FABRIK
+import HumanoidAnim.IK.TwoBone
 import HumanoidAnim.Motion.Keyframe (Keyframe(..))
 import HumanoidAnim.Motion.Trajectory (keyframesToTrajectory)
 import HumanoidAnim.Skeleton.Bones (HumanoidBone)
@@ -105,8 +106,9 @@ generateAnimation config skeleton fixedConstraints effector keyframes name durat
   -- Get frame times
   let frameTimes = getFrameTimes (genFrameRate config) (genFrameCount config) duration
 
-  -- Generate frames
-  frames <- mapM (generateFrame skeleton fixedConstraints effector trajectory) frameTimes
+  -- Generate frames using the configured solver
+  let solverType = genSolverType config
+  frames <- mapM (generateFrame solverType skeleton fixedConstraints effector trajectory) frameTimes
 
   -- Collect warnings from IK solving
   let allWarnings = concatMap extractWarnings frames
@@ -124,13 +126,14 @@ generateAnimation config skeleton fixedConstraints effector keyframes name durat
 
 -- | Generate a single animation frame
 generateFrame
-  :: Skeleton
+  :: SolverType
+  -> Skeleton
   -> [IKConstraint]
   -> HumanoidBone
   -> (Float -> V3 Float)  -- ^ Trajectory function
   -> Float                -- ^ Time
   -> Result (AnimationFrame, [AppWarning])
-generateFrame skeleton fixedConstraints effector trajectory time = do
+generateFrame solverType skeleton fixedConstraints effector trajectory time = do
   let targetPos = trajectory time
 
   -- Create IK input with effector constraint
@@ -142,16 +145,22 @@ generateFrame skeleton fixedConstraints effector trajectory time = do
         , ikConstraints = allConstraints
         }
 
-  -- Solve IK
-  let fabrikConfig = FABRIKConfig 50 0.001
-      ikOutput = solveFABRIK fabrikConfig ikInput
+  -- Solve IK using the configured solver
+  let ikOutput = case solverType of
+        TwoBoneSolver -> solveTwoBone defaultTwoBoneConfig ikInput
+        FABRIKSolver  -> solveFABRIK (FABRIKConfig 50 0.001) ikInput
+        CCDSolver     -> solveFABRIK (FABRIKConfig 50 0.001) ikInput  -- Fallback to FABRIK
 
   -- Convert IK warnings to app warnings
   let warnings = map convertIKWarning (ikWarnings ikOutput)
 
   -- Compute rotations from solved positions
   let solvedPose = ikResultPose ikOutput
-      fullPose = computeRotations skeleton solvedPose Map.empty
+      computedPose = computeRotations skeleton solvedPose Map.empty
+
+  -- Apply fixed rotations from FixedWithRotation constraints
+  let fixedRotations = extractFixedRotations fixedConstraints
+      fullPose = applyFixedRotations fixedRotations computedPose
 
   let frame = AnimationFrame
         { frameTime = time
@@ -159,6 +168,24 @@ generateFrame skeleton fixedConstraints effector trajectory time = do
         }
 
   success (frame, warnings)
+
+-- | Extract fixed rotations from constraints
+extractFixedRotations :: [IKConstraint] -> Map HumanoidBone (Quaternion Float)
+extractFixedRotations constraints =
+  Map.fromList [(bone, rot) | FixedWithRotation bone _ rot <- constraints]
+
+-- | Apply fixed rotations to a pose
+applyFixedRotations
+  :: Map HumanoidBone (Quaternion Float)
+  -> Map HumanoidBone Transform
+  -> Map HumanoidBone Transform
+applyFixedRotations fixedRots pose =
+  Map.mapWithKey applyIfFixed pose
+  where
+    applyIfFixed bone transform =
+      case Map.lookup bone fixedRots of
+        Just rot -> transform { transformRotation = rot }
+        Nothing -> transform
 
 -- | Convert IK warning to app warning
 convertIKWarning :: IKWarning -> AppWarning

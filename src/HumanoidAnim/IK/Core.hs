@@ -9,6 +9,7 @@ module HumanoidAnim.IK.Core
     IKConstraint(..)
   , constraintBone
   , constraintPosition
+  , constraintRotation
 
     -- * Input/Output
   , IKInput(..)
@@ -29,6 +30,8 @@ import HumanoidAnim.Skeleton.Config (Skeleton)
 data IKConstraint
   = Fixed HumanoidBone (V3 Float)
     -- ^ Fixed bone at position (anchor point)
+  | FixedWithRotation HumanoidBone (V3 Float) (Quaternion Float)
+    -- ^ Fixed bone at position with fixed rotation (anchor point with orientation)
   | Effector HumanoidBone (V3 Float)
     -- ^ Effector bone target position
   | EffectorWithRotation HumanoidBone (V3 Float) (Quaternion Float)
@@ -38,14 +41,23 @@ data IKConstraint
 -- | Get the bone from a constraint
 constraintBone :: IKConstraint -> HumanoidBone
 constraintBone (Fixed bone _) = bone
+constraintBone (FixedWithRotation bone _ _) = bone
 constraintBone (Effector bone _) = bone
 constraintBone (EffectorWithRotation bone _ _) = bone
 
 -- | Get the target position from a constraint
 constraintPosition :: IKConstraint -> V3 Float
 constraintPosition (Fixed _ pos) = pos
+constraintPosition (FixedWithRotation _ pos _) = pos
 constraintPosition (Effector _ pos) = pos
 constraintPosition (EffectorWithRotation _ pos _) = pos
+
+-- | Get the target rotation from a constraint (if specified)
+constraintRotation :: IKConstraint -> Maybe (Quaternion Float)
+constraintRotation (Fixed _ _) = Nothing
+constraintRotation (FixedWithRotation _ _ rot) = Just rot
+constraintRotation (Effector _ _) = Nothing
+constraintRotation (EffectorWithRotation _ _ rot) = Just rot
 
 -- | Input for IK solver
 data IKInput = IKInput
@@ -80,5 +92,5 @@ data IKWarning
   deriving stock (Show, Eq)
 
 -- | Solver type enumeration
-data SolverType = FABRIKSolver | CCDSolver
+data SolverType = FABRIKSolver | CCDSolver | TwoBoneSolver
   deriving stock (Show, Eq, Read)

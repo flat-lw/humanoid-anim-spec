@@ -214,14 +214,117 @@ generateMuscleKeyframe matchingBones muscleId frame =
         (bone:_) ->
           case Map.lookup bone (framePose frame) of
             Just transform ->
-              let quat = transformRotation transform
-                  muscles = quaternionToMuscles bone quat
-              in case lookup muscleId muscles of
-                   Just v -> v
-                   Nothing -> 0
+              -- For limb bones, use position-based calculation
+              if bone `elem` [RightUpperArm, LeftUpperArm, RightUpperLeg, LeftUpperLeg,
+                              RightLowerArm, LeftLowerArm, RightLowerLeg, LeftLowerLeg]
+              then computeLimbMuscle bone muscleId transform (framePose frame)
+              else
+                -- For other bones, use quaternion-based calculation
+                let quat = transformRotation transform
+                    muscles = quaternionToMuscles bone quat
+                in case lookup muscleId muscles of
+                     Just v -> v
+                     Nothing -> 0
             Nothing -> 0
         [] -> 0
   in makeKeyframe (frameTime frame) muscleValue
+
+-- | Compute muscle value for limb bones using positions
+computeLimbMuscle :: HumanoidBone -> MuscleId -> Transform -> Map.Map HumanoidBone Transform -> Float
+computeLimbMuscle bone muscleId transform pose =
+  case bone of
+    -- Upper limbs use parent-to-child direction
+    RightUpperArm -> computeUpperLimbMuscle bone muscleId transform pose
+    LeftUpperArm  -> computeUpperLimbMuscle bone muscleId transform pose
+    RightUpperLeg -> computeUpperLimbMuscle bone muscleId transform pose
+    LeftUpperLeg  -> computeUpperLimbMuscle bone muscleId transform pose
+    -- Lower limbs use knee/elbow angle
+    RightLowerArm -> computeLowerLimbMuscle bone muscleId pose
+    LeftLowerArm  -> computeLowerLimbMuscle bone muscleId pose
+    RightLowerLeg -> computeLowerLimbMuscle bone muscleId pose
+    LeftLowerLeg  -> computeLowerLimbMuscle bone muscleId pose
+    _ -> 0
+
+-- | Compute muscle for upper limb (UpperArm, UpperLeg)
+computeUpperLimbMuscle :: HumanoidBone -> MuscleId -> Transform -> Map.Map HumanoidBone Transform -> Float
+computeUpperLimbMuscle bone muscleId transform pose =
+  case getChildPosition bone pose of
+    Just childPos ->
+      let parentPos = transformPosition transform
+          fetusDir = fetusDirection bone
+          muscles = positionToMuscles bone parentPos childPos fetusDir
+      in case lookup muscleId muscles of
+           Just v -> v
+           Nothing -> 0
+    Nothing -> 0
+
+-- | Compute muscle for lower limb (LowerArm, LowerLeg) - especially Stretch
+computeLowerLimbMuscle :: HumanoidBone -> MuscleId -> Map.Map HumanoidBone Transform -> Float
+computeLowerLimbMuscle bone muscleId pose =
+  let -- Get the three bone positions for angle calculation
+      (upperBone, endBone) = case bone of
+        RightLowerArm -> (RightUpperArm, RightHand)
+        LeftLowerArm  -> (LeftUpperArm, LeftHand)
+        RightLowerLeg -> (RightUpperLeg, RightFoot)
+        LeftLowerLeg  -> (LeftUpperLeg, LeftFoot)
+        _ -> (bone, bone)
+
+      mUpperPos = transformPosition <$> Map.lookup upperBone pose
+      mMidPos = transformPosition <$> Map.lookup bone pose
+      mEndPos = transformPosition <$> Map.lookup endBone pose
+
+  in case (mUpperPos, mMidPos, mEndPos) of
+       (Just upperPos, Just midPos, Just endPos) ->
+         let -- Calculate angle at the mid joint (elbow/knee)
+             v1 = upperPos - midPos  -- Vector from mid to upper
+             v2 = endPos - midPos    -- Vector from mid to end
+
+             -- Compute angle using dot product
+             dotProd = v1 `dotV` v2
+             len1 = normV v1
+             len2 = normV v2
+             cosAngle = if len1 > 0.0001 && len2 > 0.0001
+                        then dotProd / (len1 * len2)
+                        else 1
+             angleRad = acos (max (-1) (min 1 cosAngle))
+             angleDeg = angleRad * 180 / pi
+
+             -- Stretch muscle: 0 = straight (180 deg), 1 = fully bent (~35 deg)
+             -- Unity range: 0-145 degrees of flexion from straight
+             -- Angle from straight = 180 - measured angle
+             flexionAngle = 180 - angleDeg
+
+             -- Normalize to 0-1 range (0 = straight, 1 = max flexion)
+             stretchValue = max 0 (min 1 (flexionAngle / 145))
+
+         in case muscleId of
+              RightLegStretch -> stretchValue
+              LeftLegStretch -> stretchValue
+              RightForearmStretch -> stretchValue
+              LeftForearmStretch -> stretchValue
+              -- For twist, fall back to quaternion
+              _ -> let quat = maybe (Quaternion 1 (V3 0 0 0)) transformRotation (Map.lookup bone pose)
+                       muscles = quaternionToMuscles bone quat
+                   in case lookup muscleId muscles of
+                        Just v -> v
+                        Nothing -> 0
+       _ -> 0
+  where
+    dotV (V3 x1 y1 z1) (V3 x2 y2 z2) = x1*x2 + y1*y2 + z1*z2
+    normV (V3 x y z) = sqrt (x*x + y*y + z*z)
+
+-- | Get child bone position for a given bone
+getChildPosition :: HumanoidBone -> Map.Map HumanoidBone Transform -> Maybe (V3 Float)
+getChildPosition bone pose =
+  let childBone = case bone of
+        RightUpperArm -> Just RightLowerArm
+        LeftUpperArm  -> Just LeftLowerArm
+        RightUpperLeg -> Just RightLowerLeg
+        LeftUpperLeg  -> Just LeftLowerLeg
+        _ -> Nothing
+  in case childBone of
+       Just child -> transformPosition <$> Map.lookup child pose
+       Nothing -> Nothing
 
 -- | Generate root motion curves (RootT.x, RootT.y, RootT.z, RootQ.x, RootQ.y, RootQ.z, RootQ.w)
 generateRootMotionCurves :: [AnimationFrame] -> [UnityCurve]

@@ -30,6 +30,7 @@ library
                     , HumanoidAnim.Skeleton.Transform
                     , HumanoidAnim.IK.Core
                     , HumanoidAnim.IK.FABRIK
+                    , HumanoidAnim.IK.TwoBone
                     , HumanoidAnim.Motion.Easing
                     , HumanoidAnim.Motion.Keyframe
                     , HumanoidAnim.Motion.Interpolation

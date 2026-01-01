@@ -109,7 +109,11 @@ configToConstraints config = do
 toFixedConstraint :: (V3 Float -> V3 Float) -> FixedBoneConfig -> Result IKConstraint
 toFixedConstraint coordConvert cfg =
   case parseBoneName (fixedBone cfg) of
-    Just bone -> success $ Fixed bone (coordConvert $ fixedPosition cfg)
+    Just bone ->
+      let pos = coordConvert $ fixedPosition cfg
+      in case fixedRotation cfg of
+           Just rot -> success $ FixedWithRotation bone pos rot
+           Nothing -> success $ Fixed bone pos
     Nothing -> failure $ InvalidBoneName (T.unpack $ fixedBone cfg)
 
 -- | Convert effector keyframes to Keyframe type
