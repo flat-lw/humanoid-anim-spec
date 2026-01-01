@@ -1,0 +1,18 @@
+{
+  "frameRate": 30,
+  "duration": 2.0,
+  "coordinateSystem": "z-up",
+  "effector": {
+    "bone": "RightHand",
+    "keyframes": [
+      {"time": 0.0, "position": [0.3, 0.2, 1.0]},
+      {"time": 1.0, "position": [0.5, 0.4, 1.4]},
+      {"time": 2.0, "position": [0.3, 0.2, 1.0]}
+    ]
+  },
+  "fixedBones": {
+    "Hips": [0, 0, 1],
+    "LeftFoot": [-0.1, 0, 0],
+    "RightFoot": [0.1, 0, 0]
+  }
+}

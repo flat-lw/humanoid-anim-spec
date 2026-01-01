@@ -1,0 +1,37 @@
+# Reach Forward Animation
+# Character reaching forward with right hand
+
+name: "ReachForward"
+duration: 1.5
+
+fixed:
+  - bone: "Hips"
+    position: [0, 1, 0]
+  - bone: "LeftFoot"
+    position: [-0.1, 0, 0]
+  - bone: "RightFoot"
+    position: [0.1, 0, 0]
+
+effector:
+  bone: "RightHand"
+  keyframes:
+    - time: 0.0
+      position: [-0.3, 1.0, 0.1]
+      easing: "easeIn"
+    - time: 0.75
+      position: [-0.4, 1.2, 0.6]
+      easing: "easeOut"
+    - time: 1.5
+      position: [-0.3, 1.0, 0.1]
+
+config:
+  frameRate: 30
+  solver: "fabrik"
+  loop: "once"
+
+skeleton:
+  detail: "standard"
+
+output:
+  format: "glb"
+  optimize: true

@@ -1,0 +1,31 @@
+# Cabal build artifacts
+dist-newstyle/
+dist/
+cabal.project.local
+cabal.project.local~
+.cabal-sandbox/
+cabal.sandbox.config
+
+# Stack build artifacts
+.stack-work/
+
+# GHC artifacts
+*.hi
+*.o
+*.dyn_hi
+*.dyn_o
+
+# Editor files
+*~
+*.swp
+*.swo
+.vscode/
+.idea/
+
+# Nix
+result
+result-*
+
+# Misc
+*.log
+.DS_Store

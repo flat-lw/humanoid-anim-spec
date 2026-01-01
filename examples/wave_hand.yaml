@@ -1,0 +1,46 @@
+# Wave Hand Animation
+# A simple hand waving animation using the right hand as effector
+
+name: "WaveHand"
+duration: 2.0
+
+# Fixed bones (anchors)
+fixed:
+  - bone: "Hips"
+    position: [0, 1, 0]
+  - bone: "LeftFoot"
+    position: [-0.1, 0, 0]
+  - bone: "RightFoot"
+    position: [0.1, 0, 0]
+
+# Effector (moving bone)
+effector:
+  bone: "RightHand"
+  keyframes:
+    - time: 0.0
+      position: [0.4, 1.2, 0.2]
+      easing: "easeInOut"
+    - time: 0.5
+      position: [0.5, 1.5, 0.3]
+      easing: "easeInOut"
+    - time: 1.0
+      position: [0.4, 1.2, 0.2]
+      easing: "easeInOut"
+    - time: 1.5
+      position: [0.5, 1.5, 0.3]
+      easing: "easeInOut"
+    - time: 2.0
+      position: [0.4, 1.2, 0.2]
+
+# Optional settings
+config:
+  frameRate: 30
+  solver: "fabrik"
+  loop: "cycle"
+
+skeleton:
+  detail: "standard"
+
+output:
+  format: "glb"
+  optimize: true
