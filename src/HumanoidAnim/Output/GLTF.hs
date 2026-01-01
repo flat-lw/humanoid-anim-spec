@@ -30,10 +30,12 @@ import qualified Data.ByteString.Lazy as LBS
 import qualified Data.ByteString.Builder as Builder
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
+import Data.Set (Set)
+import qualified Data.Set as Set
 import Data.List (nub, sortBy)
 import Data.Ord (comparing)
-import Data.Word (Word8, Word32)
-import Linear (V3(..), Quaternion(..))
+import Data.Word (Word8, Word16, Word32)
+import Linear (V3(..), V4(..), Quaternion(..), norm)
 import System.IO (withBinaryFile, IOMode(..))
 
 import HumanoidAnim.Animation (AnimationClip(..), AnimationFrame(..))
@@ -41,6 +43,7 @@ import HumanoidAnim.Error
 import HumanoidAnim.Skeleton.Bones (HumanoidBone(..), boneName)
 import HumanoidAnim.Skeleton.Config (Skeleton(..), Transform(..))
 import HumanoidAnim.Skeleton.Hierarchy (boneParent, getBoneChain)
+import HumanoidAnim.Output.Mesh
 
 -- | glTF output format
 data GLTFFormat = GLB | GLTF
@@ -86,29 +89,79 @@ tryWriteFile path content = do
   BS.writeFile path content
   pure (Right ())
 
--- | Build glTF JSON structure
+-- | Build glTF JSON structure with mesh
 buildGLTFJson :: GLTFOptions -> AnimationClip -> Skeleton -> Aeson.Value
-buildGLTFJson opts clip skeleton = object
-  [ "asset" .= object
-      [ "version" .= ("2.0" :: String)
-      , "generator" .= ("humanoid-anim" :: String)
+buildGLTFJson opts clip skeleton =
+  let mesh = generateStickFigure defaultMeshConfig skeleton
+      meshBufferData = buildMeshBufferData mesh
+      ibmData = buildIBMData skeleton
+      animBufferData = buildAnimBufferData opts clip skeleton
+      -- Total buffer includes mesh + IBM + animation data
+      totalBufferSize = BS.length meshBufferData + BS.length ibmData + BS.length animBufferData
+      activeBones = sortBy (comparing boneOrder) $ Map.keys (skeletonRestPose skeleton)
+      numBones = length activeBones
+      numFrames = length (clipFrames clip)
+      numVertices = length (meshVertices mesh)
+      numIndices = length (meshIndices mesh)
+  in object
+    [ "asset" .= object
+        [ "version" .= ("2.0" :: String)
+        , "generator" .= ("humanoid-anim" :: String)
+        ]
+    , "scene" .= (0 :: Int)
+    -- Scene includes root bone (Hips, index 0) and mesh node (last node)
+    , "scenes" .= [object ["nodes" .= ([0, numBones] :: [Int])]]
+    , "nodes" .= buildNodesWithMesh skeleton numVertices
+    , "meshes" .= [buildMeshObject numVertices numIndices]
+    , "skins" .= buildSkinsWithIBM skeleton
+    , "materials" .= [buildMaterial]
+    , "animations" .= [buildAnimation opts clip skeleton numVertices numIndices]
+    , "buffers" .= [object ["byteLength" .= totalBufferSize]]
+    , "bufferViews" .= buildBufferViewsWithMesh opts clip skeleton mesh
+    , "accessors" .= buildAccessorsWithMesh opts clip skeleton mesh
+    ]
+
+-- | Build material for stick figure
+buildMaterial :: Aeson.Value
+buildMaterial = object
+  [ "name" .= ("StickFigureMaterial" :: String)
+  , "pbrMetallicRoughness" .= object
+      [ "baseColorFactor" .= [0.8 :: Float, 0.8, 0.8, 1.0]
+      , "metallicFactor" .= (0.1 :: Float)
+      , "roughnessFactor" .= (0.8 :: Float)
       ]
-  , "scene" .= (0 :: Int)
-  , "scenes" .= [object ["nodes" .= [0 :: Int]]]
-  , "nodes" .= buildNodes skeleton
-  , "skins" .= buildSkins skeleton
-  , "animations" .= [buildAnimation opts clip skeleton]
-  , "buffers" .= buildBuffers opts clip skeleton
-  , "bufferViews" .= buildBufferViews opts clip skeleton
-  , "accessors" .= buildAccessors opts clip skeleton
   ]
 
--- | Build node hierarchy for skeleton
-buildNodes :: Skeleton -> [Aeson.Value]
-buildNodes skeleton =
+-- | Build mesh object
+buildMeshObject :: Int -> Int -> Aeson.Value
+buildMeshObject numVertices numIndices = object
+  [ "name" .= ("StickFigure" :: String)
+  , "primitives" .= [object
+      [ "attributes" .= object
+          [ "POSITION" .= (0 :: Int)   -- Position accessor
+          , "NORMAL" .= (1 :: Int)     -- Normal accessor
+          , "JOINTS_0" .= (2 :: Int)   -- Joint indices accessor
+          , "WEIGHTS_0" .= (3 :: Int)  -- Weights accessor
+          ]
+      , "indices" .= (4 :: Int)        -- Index accessor
+      , "material" .= (0 :: Int)
+      , "mode" .= (4 :: Int)           -- TRIANGLES
+      ]]
+  ]
+
+-- | Build node hierarchy with mesh node
+buildNodesWithMesh :: Skeleton -> Int -> [Aeson.Value]
+buildNodesWithMesh skeleton numVertices =
   let activeBones = Map.keys (skeletonRestPose skeleton)
       sortedBones = sortBy (comparing boneOrder) activeBones
-  in map (buildNode skeleton sortedBones) sortedBones
+      boneNodes = map (buildNode skeleton sortedBones) sortedBones
+      -- Add mesh node that references skin
+      meshNode = object
+        [ "name" .= ("StickFigureMesh" :: String)
+        , "mesh" .= (0 :: Int)
+        , "skin" .= (0 :: Int)
+        ]
+  in boneNodes ++ [meshNode]
 
 -- | Order bones for consistent output
 boneOrder :: HumanoidBone -> Int
@@ -138,22 +191,24 @@ boneIndex bones bone = case lookup bone (zip bones [0..]) of
   Just i -> i
   Nothing -> 0
 
--- | Build skins array
-buildSkins :: Skeleton -> [Aeson.Value]
-buildSkins skeleton =
+-- | Build skins array with inverse bind matrices
+buildSkinsWithIBM :: Skeleton -> [Aeson.Value]
+buildSkinsWithIBM skeleton =
   let activeBones = sortBy (comparing boneOrder) $ Map.keys (skeletonRestPose skeleton)
+      numBones = length activeBones
   in [object
        [ "name" .= ("Humanoid" :: String)
-       , "skeleton" .= (0 :: Int)  -- Root node
-       , "joints" .= [0 .. length activeBones - 1]
+       , "skeleton" .= (0 :: Int)  -- Root node (Hips)
+       , "joints" .= [0 .. numBones - 1]
+       , "inverseBindMatrices" .= (5 :: Int)  -- Accessor index for IBM
        ]]
 
 -- | Build animation object
-buildAnimation :: GLTFOptions -> AnimationClip -> Skeleton -> Aeson.Value
-buildAnimation opts clip skeleton = object
+buildAnimation :: GLTFOptions -> AnimationClip -> Skeleton -> Int -> Int -> Aeson.Value
+buildAnimation opts clip skeleton numVertices numIndices = object
   [ "name" .= clipName clip
   , "channels" .= buildChannels skeleton
-  , "samplers" .= buildSamplers clip skeleton
+  , "samplers" .= buildSamplers clip skeleton numVertices numIndices
   ]
 
 -- | Build animation channels
@@ -174,91 +229,170 @@ buildChannel path samplerIdx bone = object
       ]
   ]
 
--- | Build animation samplers
-buildSamplers :: AnimationClip -> Skeleton -> [Aeson.Value]
-buildSamplers clip skeleton =
+-- | Build animation samplers (accessor indices adjusted for mesh data)
+buildSamplers :: AnimationClip -> Skeleton -> Int -> Int -> [Aeson.Value]
+buildSamplers clip skeleton numVertices numIndices =
   let activeBones = sortBy (comparing boneOrder) $ Map.keys (skeletonRestPose skeleton)
       numBones = length activeBones
+      -- Accessor indices: 0-4 are mesh, 5 is IBM, 6 is time, 7+ are animation data
+      timeAccessorIdx = 6 :: Int
+      translationStartIdx = 7 :: Int
+      rotationStartIdx = translationStartIdx + numBones
       -- Translation samplers
       translationSamplers = [object
-        [ "input" .= (0 :: Int)  -- Time accessor
-        , "output" .= (i + 1)    -- Translation accessor
+        [ "input" .= timeAccessorIdx
+        , "output" .= (translationStartIdx + i)
         , "interpolation" .= ("LINEAR" :: String)
         ] | i <- [0 .. numBones - 1]]
       -- Rotation samplers
       rotationSamplers = [object
-        [ "input" .= (0 :: Int)
-        , "output" .= (numBones + 1 + i)  -- Rotation accessor
+        [ "input" .= timeAccessorIdx
+        , "output" .= (rotationStartIdx + i)
         , "interpolation" .= ("LINEAR" :: String)
         ] | i <- [0 .. numBones - 1]]
   in translationSamplers ++ rotationSamplers
 
--- | Build buffers array
-buildBuffers :: GLTFOptions -> AnimationClip -> Skeleton -> [Aeson.Value]
-buildBuffers opts clip skeleton =
-  let bufferData = buildBufferData opts clip skeleton
-  in [object
-       [ "byteLength" .= BS.length bufferData
-       ]]
-
--- | Build buffer views
-buildBufferViews :: GLTFOptions -> AnimationClip -> Skeleton -> [Aeson.Value]
-buildBufferViews opts clip skeleton =
+-- | Build buffer views including mesh data
+buildBufferViewsWithMesh :: GLTFOptions -> AnimationClip -> Skeleton -> MeshData -> [Aeson.Value]
+buildBufferViewsWithMesh opts clip skeleton mesh =
   let numFrames = length (clipFrames clip)
       activeBones = Map.keys (skeletonRestPose skeleton)
       numBones = length activeBones
+      numVertices = length (meshVertices mesh)
+      numIndices = length (meshIndices mesh)
 
-      timeViewSize = numFrames * 4  -- float32
-      translationViewSize = numFrames * 3 * 4  -- vec3 * float32
-      rotationViewSize = numFrames * 4 * 4  -- vec4 * float32
+      -- Mesh buffer sizes
+      positionSize = numVertices * 3 * 4    -- vec3 float32
+      normalSize = numVertices * 3 * 4      -- vec3 float32
+      jointsSize = numVertices * 4 * 2      -- vec4 uint16
+      weightsSize = numVertices * 4 * 4     -- vec4 float32
+      indicesSize = numIndices * 2          -- uint16
+      ibmSize = numBones * 16 * 4           -- mat4 float32
 
-      -- Time view
+      -- Animation buffer sizes
+      timeViewSize = numFrames * 4
+      translationViewSize = numFrames * 3 * 4
+      rotationViewSize = numFrames * 4 * 4
+
+      -- Calculate offsets
+      offset0 = 0                           -- positions
+      offset1 = offset0 + positionSize      -- normals
+      offset2 = offset1 + normalSize        -- joints
+      offset3 = offset2 + jointsSize        -- weights
+      offset4 = offset3 + weightsSize       -- indices
+      offset5 = offset4 + indicesSize       -- IBM
+      animOffset = offset5 + ibmSize        -- animation data starts here
+
+      -- Mesh buffer views (0-5)
+      positionView = object
+        [ "buffer" .= (0 :: Int), "byteOffset" .= offset0, "byteLength" .= positionSize
+        , "target" .= (34962 :: Int) ]  -- ARRAY_BUFFER
+      normalView = object
+        [ "buffer" .= (0 :: Int), "byteOffset" .= offset1, "byteLength" .= normalSize
+        , "target" .= (34962 :: Int) ]
+      jointsView = object
+        [ "buffer" .= (0 :: Int), "byteOffset" .= offset2, "byteLength" .= jointsSize
+        , "target" .= (34962 :: Int) ]
+      weightsView = object
+        [ "buffer" .= (0 :: Int), "byteOffset" .= offset3, "byteLength" .= weightsSize
+        , "target" .= (34962 :: Int) ]
+      indicesView = object
+        [ "buffer" .= (0 :: Int), "byteOffset" .= offset4, "byteLength" .= indicesSize
+        , "target" .= (34963 :: Int) ]  -- ELEMENT_ARRAY_BUFFER
+      ibmView = object
+        [ "buffer" .= (0 :: Int), "byteOffset" .= offset5, "byteLength" .= ibmSize ]
+
+      -- Animation buffer views (6+)
       timeView = object
-        [ "buffer" .= (0 :: Int)
-        , "byteOffset" .= (0 :: Int)
-        , "byteLength" .= timeViewSize
-        ]
+        [ "buffer" .= (0 :: Int), "byteOffset" .= animOffset, "byteLength" .= timeViewSize ]
 
-      -- Translation views
       translationViews = [object
         [ "buffer" .= (0 :: Int)
-        , "byteOffset" .= (timeViewSize + i * translationViewSize)
+        , "byteOffset" .= (animOffset + timeViewSize + i * translationViewSize)
         , "byteLength" .= translationViewSize
         ] | i <- [0 .. numBones - 1]]
 
-      -- Rotation views
-      rotationOffset = timeViewSize + numBones * translationViewSize
+      rotationOffset = animOffset + timeViewSize + numBones * translationViewSize
       rotationViews = [object
         [ "buffer" .= (0 :: Int)
         , "byteOffset" .= (rotationOffset + i * rotationViewSize)
         , "byteLength" .= rotationViewSize
         ] | i <- [0 .. numBones - 1]]
 
-  in [timeView] ++ translationViews ++ rotationViews
+  in [positionView, normalView, jointsView, weightsView, indicesView, ibmView, timeView]
+     ++ translationViews ++ rotationViews
 
--- | Build accessors
-buildAccessors :: GLTFOptions -> AnimationClip -> Skeleton -> [Aeson.Value]
-buildAccessors opts clip skeleton =
+-- | Build accessors including mesh data
+buildAccessorsWithMesh :: GLTFOptions -> AnimationClip -> Skeleton -> MeshData -> [Aeson.Value]
+buildAccessorsWithMesh opts clip skeleton mesh =
   let numFrames = length (clipFrames clip)
       activeBones = Map.keys (skeletonRestPose skeleton)
       numBones = length activeBones
+      numVertices = length (meshVertices mesh)
+      numIndices = length (meshIndices mesh)
       times = map frameTime (clipFrames clip)
       minTime = minimum times
       maxTime = maximum times
 
-      -- Time accessor
-      timeAccessor = object
+      -- Calculate position bounds
+      positions = map vertPosition (meshVertices mesh)
+      (minPos, maxPos) = positionBounds positions
+
+      -- Mesh accessors (0-4)
+      positionAccessor = object  -- 0
         [ "bufferView" .= (0 :: Int)
         , "componentType" .= (5126 :: Int)  -- FLOAT
+        , "count" .= numVertices
+        , "type" .= ("VEC3" :: String)
+        , "min" .= v3ToList minPos
+        , "max" .= v3ToList maxPos
+        ]
+      normalAccessor = object  -- 1
+        [ "bufferView" .= (1 :: Int)
+        , "componentType" .= (5126 :: Int)
+        , "count" .= numVertices
+        , "type" .= ("VEC3" :: String)
+        ]
+      jointsAccessor = object  -- 2
+        [ "bufferView" .= (2 :: Int)
+        , "componentType" .= (5123 :: Int)  -- UNSIGNED_SHORT
+        , "count" .= numVertices
+        , "type" .= ("VEC4" :: String)
+        ]
+      weightsAccessor = object  -- 3
+        [ "bufferView" .= (3 :: Int)
+        , "componentType" .= (5126 :: Int)
+        , "count" .= numVertices
+        , "type" .= ("VEC4" :: String)
+        ]
+      indicesAccessor = object  -- 4
+        [ "bufferView" .= (4 :: Int)
+        , "componentType" .= (5123 :: Int)  -- UNSIGNED_SHORT
+        , "count" .= numIndices
+        , "type" .= ("SCALAR" :: String)
+        ]
+
+      -- Inverse bind matrices accessor (5)
+      ibmAccessor = object
+        [ "bufferView" .= (5 :: Int)
+        , "componentType" .= (5126 :: Int)
+        , "count" .= numBones
+        , "type" .= ("MAT4" :: String)
+        ]
+
+      -- Time accessor (6)
+      timeAccessor = object
+        [ "bufferView" .= (6 :: Int)
+        , "componentType" .= (5126 :: Int)
         , "count" .= numFrames
         , "type" .= ("SCALAR" :: String)
         , "min" .= [minTime]
         , "max" .= [maxTime]
         ]
 
-      -- Translation accessors
+      -- Translation accessors (7+)
       translationAccessors = [object
-        [ "bufferView" .= (i + 1)
+        [ "bufferView" .= (7 + i)
         , "componentType" .= (5126 :: Int)
         , "count" .= numFrames
         , "type" .= ("VEC3" :: String)
@@ -266,17 +400,83 @@ buildAccessors opts clip skeleton =
 
       -- Rotation accessors
       rotationAccessors = [object
-        [ "bufferView" .= (numBones + 1 + i)
+        [ "bufferView" .= (7 + numBones + i)
         , "componentType" .= (5126 :: Int)
         , "count" .= numFrames
         , "type" .= ("VEC4" :: String)
         ] | i <- [0 .. numBones - 1]]
 
-  in [timeAccessor] ++ translationAccessors ++ rotationAccessors
+  in [positionAccessor, normalAccessor, jointsAccessor, weightsAccessor, indicesAccessor,
+      ibmAccessor, timeAccessor]
+     ++ translationAccessors ++ rotationAccessors
 
--- | Build binary buffer data
-buildBufferData :: GLTFOptions -> AnimationClip -> Skeleton -> ByteString
-buildBufferData opts clip skeleton = LBS.toStrict $ Builder.toLazyByteString builder
+-- | Calculate position bounds
+positionBounds :: [V3 Float] -> (V3 Float, V3 Float)
+positionBounds [] = (V3 0 0 0, V3 0 0 0)
+positionBounds (p:ps) = foldr updateBounds (p, p) ps
+  where
+    updateBounds (V3 x y z) (V3 minX minY minZ, V3 maxX maxY maxZ) =
+      (V3 (min x minX) (min y minY) (min z minZ),
+       V3 (max x maxX) (max y maxY) (max z maxZ))
+
+-- | Build mesh buffer data
+buildMeshBufferData :: MeshData -> ByteString
+buildMeshBufferData mesh = LBS.toStrict $ Builder.toLazyByteString builder
+  where
+    vertices = meshVertices mesh
+    indices = meshIndices mesh
+
+    builder = mconcat
+      [ -- Positions
+        mconcat [let V3 x y z = vertPosition v in
+                 Builder.floatLE x <> Builder.floatLE y <> Builder.floatLE z
+                | v <- vertices]
+      , -- Normals
+        mconcat [let V3 x y z = vertNormal v in
+                 Builder.floatLE x <> Builder.floatLE y <> Builder.floatLE z
+                | v <- vertices]
+      , -- Joints (vec4 uint16)
+        mconcat [let V4 j0 j1 j2 j3 = vertJoints v in
+                 Builder.word16LE j0 <> Builder.word16LE j1 <>
+                 Builder.word16LE j2 <> Builder.word16LE j3
+                | v <- vertices]
+      , -- Weights (vec4 float32)
+        mconcat [let V4 w0 w1 w2 w3 = vertWeights v in
+                 Builder.floatLE w0 <> Builder.floatLE w1 <>
+                 Builder.floatLE w2 <> Builder.floatLE w3
+                | v <- vertices]
+      , -- Indices
+        mconcat [Builder.word16LE i | i <- indices]
+      ]
+
+-- | Build inverse bind matrices
+buildIBMData :: Skeleton -> ByteString
+buildIBMData skeleton = LBS.toStrict $ Builder.toLazyByteString builder
+  where
+    activeBones = sortBy (comparing boneOrder) $ Map.keys (skeletonRestPose skeleton)
+
+    builder = mconcat [boneIBM bone | bone <- activeBones]
+
+    -- Inverse bind matrix: inverse of bone's world transform
+    -- For simplicity, we compute translation-only inverse (negate position)
+    boneIBM bone =
+      let Transform (V3 tx ty tz) _ = Map.findWithDefault
+            (Transform (V3 0 0 0) (Quaternion 1 (V3 0 0 0)))
+            bone
+            (skeletonRestPose skeleton)
+          -- Column-major 4x4 identity with translation
+          -- IBM = inverse of world transform
+          -- For T-pose, rotation is identity, so just negate translation
+      in mconcat
+           [ Builder.floatLE 1, Builder.floatLE 0, Builder.floatLE 0, Builder.floatLE 0  -- col 0
+           , Builder.floatLE 0, Builder.floatLE 1, Builder.floatLE 0, Builder.floatLE 0  -- col 1
+           , Builder.floatLE 0, Builder.floatLE 0, Builder.floatLE 1, Builder.floatLE 0  -- col 2
+           , Builder.floatLE (-tx), Builder.floatLE (-ty), Builder.floatLE (-tz), Builder.floatLE 1  -- col 3
+           ]
+
+-- | Build animation buffer data
+buildAnimBufferData :: GLTFOptions -> AnimationClip -> Skeleton -> ByteString
+buildAnimBufferData opts clip skeleton = LBS.toStrict $ Builder.toLazyByteString builder
   where
     frames = clipFrames clip
     activeBones = sortBy (comparing boneOrder) $ Map.keys (skeletonRestPose skeleton)
@@ -308,12 +508,16 @@ buildBufferData opts clip skeleton = LBS.toStrict $ Builder.toLazyByteString bui
       | f <- frames
       ]
 
--- | Build GLB binary
+-- | Build GLB binary with mesh
 buildGLB :: GLTFOptions -> AnimationClip -> Skeleton -> ByteString
 buildGLB opts clip skeleton = LBS.toStrict $ Builder.toLazyByteString glbBuilder
   where
+    mesh = generateStickFigure defaultMeshConfig skeleton
     jsonData = LBS.toStrict $ Aeson.encode $ buildGLTFJson opts clip skeleton
-    bufferData = buildBufferData opts clip skeleton
+    meshBufferData = buildMeshBufferData mesh
+    ibmData = buildIBMData skeleton
+    animBufferData = buildAnimBufferData opts clip skeleton
+    bufferData = meshBufferData <> ibmData <> animBufferData
 
     -- Pad JSON to 4-byte boundary
     jsonPadding = (4 - BS.length jsonData `mod` 4) `mod` 4
@@ -346,6 +550,10 @@ buildGLB opts clip skeleton = LBS.toStrict $ Builder.toLazyByteString glbBuilder
 -- | Convert position to list for JSON
 positionToList :: V3 Float -> [Float]
 positionToList (V3 x y z) = [x, y, z]
+
+-- | Convert V3 to list
+v3ToList :: V3 Float -> [Float]
+v3ToList (V3 x y z) = [x, y, z]
 
 -- | Convert quaternion to list for JSON (x, y, z, w order for glTF)
 quaternionToList :: Quaternion Float -> [Float]
