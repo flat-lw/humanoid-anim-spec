@@ -38,6 +38,7 @@ library
                     , HumanoidAnim.Input.Validation
                     , HumanoidAnim.Output.GLTF
                     , HumanoidAnim.Output.Mesh
+                    , HumanoidAnim.Output.Muscle
                     , HumanoidAnim.Output.UnityAnim
                     , HumanoidAnim.IK.CCD
                     , HumanoidAnim.IK.Constraints
