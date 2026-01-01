@@ -22,6 +22,12 @@ module HumanoidAnim.Input.Config
   , loadConfigFromFile
   , parseConfig
 
+    -- * Writing
+  , writeConfigToFile
+
+    -- * Simplified Config (for Blender import)
+  , ConfigOptions(..)
+
     -- * Defaults
   , defaultGenerationSettings
   , defaultSkeletonSettings
@@ -317,3 +323,87 @@ loadConfig bs = case Yaml.decodeEither' bs of
 -- | Parse configuration (alias for loadConfig)
 parseConfig :: ByteString -> Result AnimationConfig
 parseConfig = loadConfig
+
+-- | Simplified configuration options (used by Blender import)
+data ConfigOptions = ConfigOptions
+  { optionsLoop :: Maybe String
+  , optionsFps :: Maybe Float
+  , optionsFrames :: Maybe Int
+  , optionsSolver :: Maybe String
+  , optionsOptimize :: Maybe Bool
+  } deriving stock (Show, Eq)
+
+-- ToJSON instances for writing YAML
+
+instance ToJSON AnimationConfig where
+  toJSON cfg = object
+    [ "name" .= configName cfg
+    , "duration" .= configDuration cfg
+    , "fixed" .= configFixed cfg
+    , "effector" .= configEffector cfg
+    , "config" .= configSettings cfg
+    ]
+
+instance ToJSON FixedBoneConfig where
+  toJSON cfg = object
+    [ "bone" .= fixedBone cfg
+    , "position" .= v3ToList (fixedPosition cfg)
+    ]
+
+instance ToJSON EffectorConfig where
+  toJSON cfg = object
+    [ "bone" .= effectorBone cfg
+    , "keyframes" .= effectorKeyframes cfg
+    ]
+
+instance ToJSON KeyframeConfig where
+  toJSON cfg = object $
+    [ "time" .= kfTime cfg
+    , "position" .= v3ToList (kfPosition cfg)
+    ] ++ rotField ++ easingField
+    where
+      rotField = case kfRotation cfg of
+        Just q -> ["rotation" .= quatToList q]
+        Nothing -> []
+      easingField = case kfEasing cfg of
+        Linear -> []
+        e -> ["easing" .= easingToText e]
+
+instance ToJSON GenerationSettings where
+  toJSON cfg = object
+    [ "frameRate" .= settingsFrameRate cfg
+    , "solver" .= settingsSolver cfg
+    , "loop" .= settingsLoop cfg
+    ]
+
+-- Helper functions for ToJSON
+
+v3ToList :: V3 Float -> [Float]
+v3ToList (V3 x y z) = [x, y, z]
+
+quatToList :: Quaternion Float -> [Float]
+quatToList (Quaternion w (V3 x y z)) = [x, y, z, w]
+
+easingToText :: Easing -> Text
+easingToText Linear = "linear"
+easingToText EaseIn = "easeIn"
+easingToText EaseOut = "easeOut"
+easingToText EaseInOut = "easeInOut"
+easingToText Cubic = "cubic"
+easingToText CubicIn = "cubicIn"
+easingToText CubicOut = "cubicOut"
+easingToText QuartIn = "quartIn"
+easingToText QuartOut = "quartOut"
+easingToText QuartInOut = "quartInOut"
+easingToText SineIn = "sineIn"
+easingToText SineOut = "sineOut"
+easingToText SineInOut = "sineInOut"
+easingToText ExpoIn = "expoIn"
+easingToText ExpoOut = "expoOut"
+easingToText ExpoInOut = "expoInOut"
+easingToText Bounce = "bounce"
+easingToText (Custom _) = "custom"
+
+-- | Write configuration to YAML file
+writeConfigToFile :: FilePath -> AnimationConfig -> IO ()
+writeConfigToFile path cfg = Yaml.encodeFile path cfg

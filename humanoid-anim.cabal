@@ -38,6 +38,10 @@ library
                     , HumanoidAnim.Input.Validation
                     , HumanoidAnim.Output.GLTF
                     , HumanoidAnim.Output.Mesh
+                    , HumanoidAnim.Output.UnityAnim
+                    , HumanoidAnim.IK.CCD
+                    , HumanoidAnim.IK.Constraints
+                    , HumanoidAnim.Input.Blender
     build-depends:    base >=4.17 && <5
                     , linear >=1.22 && <2
                     , aeson >=2.1 && <3

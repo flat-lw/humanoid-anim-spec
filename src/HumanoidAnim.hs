@@ -40,13 +40,33 @@ module HumanoidAnim
   , FABRIK(..)
   , FABRIKConfig(..)
   , defaultFABRIKConfig
+  , solveCCD
+  , CCDConfig(..)
+  , defaultCCDConfig
 
-    -- * Output
+    -- * Blender Import
+  , BlenderAnimation(..)
+  , loadBlenderJson
+  , blenderToConfig
+  , blenderAnimName
+  , blenderAnimFrameStart
+  , blenderAnimFrameEnd
+  , blenderAnimFps
+  , writeConfigToFile
+
+    -- * Output (GLTF)
   , GLTFOptions(..)
   , GLTFFormat(..)
   , exportGLTF
   , writeGLTF
   , defaultGLTFOptions
+
+    -- * Output (Unity .anim)
+  , UnityAnimOptions(..)
+  , WrapMode(..)
+  , exportUnityAnim
+  , writeUnityAnim
+  , defaultUnityAnimOptions
 
     -- * Error Handling
   , Result(..)
@@ -68,10 +88,13 @@ import HumanoidAnim.Animation
 import HumanoidAnim.Error
 import HumanoidAnim.IK.Core
 import HumanoidAnim.IK.FABRIK
+import HumanoidAnim.IK.CCD
 import HumanoidAnim.Input.Config
 import HumanoidAnim.Input.Validation
+import HumanoidAnim.Input.Blender hiding (boneName)
 import HumanoidAnim.Motion.Keyframe (Keyframe(..))
 import HumanoidAnim.Output.GLTF
+import HumanoidAnim.Output.UnityAnim
 import HumanoidAnim.Skeleton.Bones
 import HumanoidAnim.Skeleton.Config
 import HumanoidAnim.Skeleton.Hierarchy (boneParent)
