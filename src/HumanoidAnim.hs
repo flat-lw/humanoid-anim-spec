@@ -37,9 +37,6 @@ module HumanoidAnim
 
     -- * IK
   , IKConstraint(..)
-  , FABRIK(..)
-  , FABRIKConfig(..)
-  , defaultFABRIKConfig
   , solveCCD
   , CCDConfig(..)
   , defaultCCDConfig
@@ -87,7 +84,6 @@ import Linear (V3(..), Quaternion(..))
 import HumanoidAnim.Animation
 import HumanoidAnim.Error
 import HumanoidAnim.IK.Core
-import HumanoidAnim.IK.FABRIK
 import HumanoidAnim.IK.CCD
 import HumanoidAnim.Input.Config
 import HumanoidAnim.Input.Validation
@@ -170,6 +166,5 @@ parseSolverType txt = case T.toLower txt of
   "twobone"   -> TwoBoneSolver
   "two-bone"  -> TwoBoneSolver
   "two_bone"  -> TwoBoneSolver
-  "fabrik"    -> FABRIKSolver
   "ccd"       -> CCDSolver
   _           -> TwoBoneSolver  -- Default to TwoBone for limb IK

@@ -3,7 +3,7 @@ name:               humanoid-anim
 version:            0.1.0.0
 synopsis:           Unity Humanoid rig animation clip generator
 description:        CLI tool for generating animation clips for Unity Humanoid rig
-                    using IK (Inverse Kinematics) with FABRIK algorithm.
+                    using IK (Inverse Kinematics).
 license:            MIT
 license-file:       LICENSE
 author:             Humanoid Anim Team
@@ -29,7 +29,6 @@ library
                     , HumanoidAnim.Skeleton.Config
                     , HumanoidAnim.Skeleton.Transform
                     , HumanoidAnim.IK.Core
-                    , HumanoidAnim.IK.FABRIK
                     , HumanoidAnim.IK.TwoBone
                     , HumanoidAnim.Motion.Easing
                     , HumanoidAnim.Motion.Keyframe
@@ -85,8 +84,7 @@ test-suite humanoid-anim-test
     import:           warnings
     type:             exitcode-stdio-1.0
     main-is:          Spec.hs
-    other-modules:    IK.FABRIKSpec
-                    , Motion.InterpolationSpec
+    other-modules:    Motion.InterpolationSpec
     build-depends:    base >=4.17 && <5
                     , humanoid-anim
                     , hspec >=2.10 && <3

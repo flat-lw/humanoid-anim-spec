@@ -92,5 +92,5 @@ data IKWarning
   deriving stock (Show, Eq)
 
 -- | Solver type enumeration
-data SolverType = FABRIKSolver | CCDSolver | TwoBoneSolver
+data SolverType = CCDSolver | TwoBoneSolver
   deriving stock (Show, Eq, Read)

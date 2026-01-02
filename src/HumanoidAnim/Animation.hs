@@ -26,7 +26,6 @@ import Linear (V3(..), Quaternion(..))
 
 import HumanoidAnim.Error
 import HumanoidAnim.IK.Core as IKCore
-import HumanoidAnim.IK.FABRIK
 import HumanoidAnim.IK.TwoBone
 import HumanoidAnim.Motion.Keyframe (Keyframe(..))
 import HumanoidAnim.Motion.Trajectory (keyframesToTrajectory)
@@ -80,7 +79,7 @@ defaultGenerationConfig :: GenerationConfig
 defaultGenerationConfig = GenerationConfig
   { genFrameRate = 30
   , genFrameCount = Nothing
-  , genSolverType = FABRIKSolver
+  , genSolverType = TwoBoneSolver
   , genOptimize = True
   }
 
@@ -148,8 +147,7 @@ generateFrame solverType skeleton fixedConstraints effector trajectory time = do
   -- Solve IK using the configured solver
   let ikOutput = case solverType of
         TwoBoneSolver -> solveTwoBone defaultTwoBoneConfig ikInput
-        FABRIKSolver  -> solveFABRIK (FABRIKConfig 50 0.001) ikInput
-        CCDSolver     -> solveFABRIK (FABRIKConfig 50 0.001) ikInput  -- Fallback to FABRIK
+        CCDSolver     -> solveTwoBone defaultTwoBoneConfig ikInput  -- Fallback to TwoBone
 
   -- Convert IK warnings to app warnings
   let warnings = map convertIKWarning (ikWarnings ikOutput)
