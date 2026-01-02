@@ -31,7 +31,7 @@ import Data.List (nub)
 import qualified Data.Map.Strict as Map
 import Data.Text (Text)
 import qualified Data.Text as T
-import Linear (V3(..), Quaternion(..))
+import Linear (V3(..), Quaternion(..), (^*), (^+^), (^/))
 import Text.Printf (printf)
 
 import HumanoidAnim.Animation
@@ -262,11 +262,19 @@ computeUpperLimbMuscle bone muscleId _transform pose =
 
 -- | Compute muscle for lower limb (LowerArm, LowerLeg) - especially Stretch
 --
--- Unity Humanoid Lower Leg/Forearm Stretch muscle:
---   Range: 0° to 145° (flexion from straight)
---   muscle = 1: fully extended (straight, flexion = 0°)
---   muscle = 0: center of range (flexion = 72.5°)
---   muscle = -1: fully bent (flexion = 145°)
+-- Unity Humanoid Stretch muscle (based on unity_humanoid_center_of_mass.md):
+--   Forearm/Lower Leg Stretch: min=-80, max=80, center=-80
+--   muscle = 1: fully extended (straight, angle = 0°)
+--   muscle = 0: center of range (angle = -80°, i.e., 80° flexion)
+--   muscle = -1: fully bent (angle = -160°, i.e., 160° flexion)
+--
+-- The angle convention:
+--   0° = straight (elbow/knee fully extended)
+--   negative = flexion (bent)
+--
+-- Formula from documentation:
+--   if angle >= center: muscle = (angle - center) / max
+--   else:               muscle = (angle - center) / (-min)
 computeLowerLimbMuscle :: HumanoidBone -> MuscleId -> Map.Map HumanoidBone Transform -> Float
 computeLowerLimbMuscle bone muscleId pose =
   let -- Get the three bone positions for angle calculation
@@ -295,17 +303,21 @@ computeLowerLimbMuscle bone muscleId pose =
                         then dotProd / (len1 * len2)
                         else 1
              angleRad = acos (max (-1) (min 1 cosAngle))
-             angleDeg = angleRad * 180 / pi
+             measuredAngleDeg = angleRad * 180 / pi
 
-             -- Flexion angle: 0° = straight (180° measured), 145° = fully bent (35° measured)
-             flexionAngle = 180 - angleDeg
+             -- Convert measured angle (180° = straight, <180° = bent) to stretch angle
+             -- Stretch angle: 0° = straight, negative = bent
+             stretchAngle = measuredAngleDeg - 180
 
-             -- Convert flexion angle to muscle value
-             -- Range is 0° to 145°, muscle range is -1 to 1
-             -- muscle = 1 - (flexion / 72.5) = 1 at 0°, 0 at 72.5°, -1 at 145°
-             -- Or equivalently: muscle = (min - flexion) / (range/2) + 0 = ...
-             -- Simpler: muscle = 1 - (flexion / 72.5) clamped to [-1, 1]
-             stretchValue = clamp (-1) 1 (1 - flexionAngle / 72.5)
+             -- Apply the documented formula
+             -- center = -80, max = 80, min = -80
+             stretchCenter = -80 :: Float
+             stretchMax = 80 :: Float
+             stretchMin = -80 :: Float
+
+             stretchValue = if stretchAngle >= stretchCenter
+                            then clamp (-1) 1 ((stretchAngle - stretchCenter) / stretchMax)
+                            else clamp (-1) 1 ((stretchAngle - stretchCenter) / (-stretchMin))
 
          in case muscleId of
               RightLegStretch -> stretchValue
@@ -337,18 +349,100 @@ getChildPosition bone pose =
        Just child -> transformPosition <$> Map.lookup child pose
        Nothing -> Nothing
 
+-- ============================================================================
+-- Mass Ratios for Center of Mass Calculation
+-- ============================================================================
+--
+-- Based on biomechanics data (de Leva 1996, Dempster 1955)
+-- Used by Unity Mecanim for Humanoid retargeting
+
+-- | Mass ratio for each bone (percentage of total body mass)
+boneMassRatio :: HumanoidBone -> Float
+boneMassRatio bone = case bone of
+  Hips          -> 0.117   -- Lower trunk
+  Spine         -> 0.084   -- Mid trunk (half)
+  Chest         -> 0.084   -- Mid trunk (half)
+  UpperChest    -> 0.081   -- Upper trunk
+  Neck          -> 0.0405  -- Head+Neck (half)
+  Head          -> 0.0405  -- Head+Neck (half)
+  LeftUpperArm  -> 0.027   -- Upper arm
+  LeftLowerArm  -> 0.016   -- Forearm
+  LeftHand      -> 0.006   -- Hand
+  RightUpperArm -> 0.027
+  RightLowerArm -> 0.016
+  RightHand     -> 0.006
+  LeftUpperLeg  -> 0.100   -- Thigh
+  LeftLowerLeg  -> 0.043   -- Shank
+  LeftFoot      -> 0.014   -- Foot
+  RightUpperLeg -> 0.100
+  RightLowerLeg -> 0.043
+  RightFoot     -> 0.014
+  -- Bones without significant mass contribution
+  _             -> 0.0
+
+-- | List of bones used for center of mass calculation
+massBonesForCoM :: [HumanoidBone]
+massBonesForCoM =
+  [ Hips, Spine, Chest, UpperChest, Neck, Head
+  , LeftUpperArm, LeftLowerArm, LeftHand
+  , RightUpperArm, RightLowerArm, RightHand
+  , LeftUpperLeg, LeftLowerLeg, LeftFoot
+  , RightUpperLeg, RightLowerLeg, RightFoot
+  ]
+
+-- | Calculate center of mass Y coordinate from bone positions
+--
+-- CoM.y = Σ(Bone.y × MassRatio) / Σ(MassRatio)
+calculateCenterOfMassY :: Map.Map HumanoidBone Transform -> Float
+calculateCenterOfMassY pose =
+  let -- Get weighted Y for each bone
+      weightedYs = [(y * boneMassRatio bone, boneMassRatio bone)
+                   | bone <- massBonesForCoM
+                   , Just t <- [Map.lookup bone pose]
+                   , let V3 _ y _ = transformPosition t
+                   ]
+      totalWeightedY = sum (map fst weightedYs)
+      totalMass = sum (map snd weightedYs)
+  in if totalMass > 0
+     then totalWeightedY / totalMass
+     else 0
+
+-- | Calculate humanScale from T-Pose (first frame)
+--
+-- humanScale = T-Pose時の質量中心のY座標
+calculateHumanScale :: [AnimationFrame] -> Float
+calculateHumanScale [] = 1.0  -- Default if no frames
+calculateHumanScale (firstFrame:_) =
+  let comY = calculateCenterOfMassY (framePose firstFrame)
+  in if comY > 0 then comY else 1.0
+
+-- ============================================================================
+-- Root Motion Curves
+-- ============================================================================
+
 -- | Generate root motion curves (RootT.x, RootT.y, RootT.z, RootQ.x, RootQ.y, RootQ.z, RootQ.w)
 --
--- RootT.x/z = Hips.x/z
--- RootT.y = Hips.y - min(all bones Y)  (height from lowest bone)
+-- RootT.x/z = Center of Mass x/z (normalized)
+-- RootT.y = (Center of Mass Y - minY) / humanScale
 -- RootQ = identity
 generateRootMotionCurves :: [AnimationFrame] -> [(HumanoidBone, V3 Float)] -> [UnityCurve]
 generateRootMotionCurves frames _fixedBones =
-  let -- Get Hips position
-      getHipsPos :: AnimationFrame -> V3 Float
-      getHipsPos frame = case Map.lookup Hips (framePose frame) of
-        Just t -> transformPosition t
-        Nothing -> V3 0 0 0
+  let -- Calculate humanScale from first frame (T-Pose assumption)
+      humanScale = calculateHumanScale frames
+
+      -- Get center of mass for a frame
+      getCenterOfMass :: AnimationFrame -> V3 Float
+      getCenterOfMass frame =
+        let pose = framePose frame
+            weightedPositions = [(transformPosition t ^* boneMassRatio bone, boneMassRatio bone)
+                                | bone <- massBonesForCoM
+                                , Just t <- [Map.lookup bone pose]
+                                ]
+            totalWeighted = foldr (^+^) (V3 0 0 0) (map fst weightedPositions)
+            totalMass = sum (map snd weightedPositions)
+        in if totalMass > 0
+           then totalWeighted ^/ totalMass
+           else V3 0 0 0
 
       -- Get minimum Y across all bones in a frame
       getMinY :: AnimationFrame -> Float
@@ -358,12 +452,14 @@ generateRootMotionCurves frames _fixedBones =
            then 0
            else minimum [y | V3 _ y _ <- positions]
 
-      -- Compute RootT: x/z from Hips, y = Hips.y - minY
+      -- Compute RootT: normalized center of mass with Y offset
+      -- RootT.y = (CoM.y - minY) / humanScale
       computeRootT :: AnimationFrame -> V3 Float
       computeRootT frame =
-        let V3 hx hy hz = getHipsPos frame
+        let V3 comX comY comZ = getCenterOfMass frame
             minY = getMinY frame
-        in V3 hx (hy - minY) hz
+            normalizedY = (comY - minY) / humanScale
+        in V3 (comX / humanScale) normalizedY (comZ / humanScale)
 
       -- RootQ is identity
       identityQuat = Quaternion 1 (V3 0 0 0)

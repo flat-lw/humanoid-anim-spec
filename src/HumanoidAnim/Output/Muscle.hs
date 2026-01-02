@@ -894,24 +894,53 @@ computeFrontalAngle dir fetusDir _isRight signFlip =
       -- Return relative angle from Fetus
   in currentAngle - fetusAngle
 
--- | Convert angle (in degrees, relative to Fetus) to muscle value
--- Handles asymmetric muscle ranges properly
+-- | Convert angle (in degrees) to muscle value
+-- Based on Unity Humanoid documentation (see unity_humanoid_center_of_mass.md)
+--
+-- The confirmed formula from Unity analysis:
+--   if angle >= center:
+--       muscle = (angle - center) / max
+--   else:
+--       muscle = (angle - center) / (-min)
+--
+-- Where:
+--   min = negative direction max angle (e.g., -90 for Upper Leg Front-Back)
+--   max = positive direction max angle (e.g., +50 for Upper Leg Front-Back)
+--   center = angle where Muscle = 0 (e.g., -30 for Upper Leg Front-Back)
+--
+-- The input angleDeg is relative to Fetus Position (0 = at Fetus).
+-- We need to convert to absolute angle first, then apply the formula.
+--
+-- For Upper Leg Front-Back:
+--   Fetus Position ≈ 45° forward (absolute angle = -45°)
+--   center = -30°
+--   When leg is straight down (angleDeg = 45°):
+--     absAngle = 45 + (-45) = 0° (absolute)
+--     muscle = (0 - (-30)) / 50 = 30/50 = 0.6 ✓ (matches T-Pose muscle value!)
 angleToMuscle :: MuscleId -> Float -> MuscleValue
 angleToMuscle muscleId angleDeg =
   let MuscleRange minA maxA = muscleDefaultRange muscleId
+      -- Get the center angle for this muscle (where muscle = 0)
+      center = muscleCenterAngle muscleId
+      -- Get Fetus Position absolute angle
+      -- Fetus Position is calculated from the skeleton, we need its absolute angle
+      fetusAbsAngle = fetusAbsoluteAngle muscleId
+      -- Convert relative angle to absolute
+      absAngle = angleDeg + fetusAbsAngle
   in if isStretchMuscle' muscleId
-     then -- Stretch muscles: 0 = min angle, 1 = max angle
-          let range = maxA - minA
-          in if range > 0
-             then clampF 0 1 (angleDeg / range)
-             else 0
-     else -- Normal muscles: asymmetric mapping around 0
-          -- muscle = 0 at angle = 0 (Fetus Position)
-          -- muscle = +1 at angle = maxA
-          -- muscle = -1 at angle = minA
-          if angleDeg >= 0
-          then clampF 0 1 (angleDeg / maxA)
-          else clampF (-1) 0 (angleDeg / abs minA)
+     then -- Stretch muscles: special handling
+          -- muscle = 1 at max (extended), muscle = -1 at min (bent)
+          -- center = -80 for Stretch muscles
+          let stretchCenter = -80  -- center for Stretch muscles
+          in if absAngle >= stretchCenter
+             then clampF (-1) 1 ((absAngle - stretchCenter) / maxA)
+             else clampF (-1) 1 ((absAngle - stretchCenter) / (-minA))
+     else -- Normal muscles: asymmetric mapping around center
+          -- muscle = (angle - center) / max  if angle >= center
+          -- muscle = (angle - center) / (-min)  if angle < center
+          if absAngle >= center
+          then clampF 0 1 ((absAngle - center) / maxA)
+          else clampF (-1) 0 ((absAngle - center) / (-minA))
   where
     isStretchMuscle' :: MuscleId -> Bool
     isStretchMuscle' m = case m of
@@ -920,4 +949,56 @@ angleToMuscle muscleId angleDeg =
       LeftLegStretch -> True
       RightLegStretch -> True
       _ -> False
+
+-- | Fetus Position absolute angle for each muscle (in degrees)
+-- This is the angle of the bone in Fetus Position relative to the reference axis
+-- (vertical for legs, horizontal for arms)
+--
+-- Calculated from defaultRestPositions in Config.hs
+fetusAbsoluteAngle :: MuscleId -> Float
+fetusAbsoluteAngle mid = case mid of
+  -- Upper Leg: Fetus has legs ~45° forward
+  LeftUpperLegFrontBack  -> -45
+  RightUpperLegFrontBack -> -45
+  LeftUpperLegInOut  -> 5
+  RightUpperLegInOut -> 5
+  -- Upper Arm: Fetus has arms hanging down
+  LeftArmDownUp  -> -70  -- arms point mostly down in Fetus
+  RightArmDownUp -> -70
+  LeftArmFrontBack  -> 0  -- arms at side, no front/back angle
+  RightArmFrontBack -> 0
+  -- Default: 0
+  _ -> 0
+
+-- | Center angle for each muscle (in degrees)
+-- This is the angle where Muscle = 0
+-- Based on Unity Humanoid documentation analysis (see unity_humanoid_center_of_mass.md)
+--
+-- Key insight: T-Pose ≠ Muscle 0 for many muscles
+-- For example:
+--   Upper Leg Front-Back: T-Pose = 0° (straight down), Muscle = 0.6
+--   center = -30° (30° forward from vertical)
+--
+-- The relationship is:
+--   if muscle >= 0: angle = center + muscle × max
+--   else:           angle = center + muscle × (-min)
+muscleCenterAngle :: MuscleId -> Float
+muscleCenterAngle mid = case mid of
+  -- Upper Leg Front-Back: center = -30° (30° forward)
+  -- T-Pose (straight down, angle=0) has muscle=0.6
+  LeftUpperLegFrontBack  -> -30
+  RightUpperLegFrontBack -> -30
+  -- Upper Leg In-Out: center = 0°
+  LeftUpperLegInOut  -> 0
+  RightUpperLegInOut -> 0
+  -- Upper Arm Down-Up: center = -40° (40° below horizontal)
+  -- T-Pose (horizontal, angle=0) has muscle=0.4
+  LeftArmDownUp  -> -40
+  RightArmDownUp -> -40
+  -- Upper Arm Front-Back: center = -30° (30° forward)
+  -- T-Pose has muscle=0.3
+  LeftArmFrontBack  -> -30
+  RightArmFrontBack -> -30
+  -- Default: center = 0 (symmetric muscles have center at 0)
+  _ -> 0
 

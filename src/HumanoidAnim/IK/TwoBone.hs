@@ -412,36 +412,58 @@ computeNaturalPoleVector effector rootPos targetPos =
 
 -- | Compute arm pole vector based on hand direction
 --
--- Uses anatomical knowledge of natural arm movements:
---   - Raising arm up: elbow points outward/forward
---   - Reaching forward: elbow points outward/down
---   - Arm at side: elbow points backward
---   - Arm down/back: elbow points backward/outward
+-- Uses continuous interpolation to avoid discontinuities when hand
+-- crosses threshold boundaries. Each direction (up, down, front, back)
+-- contributes to the final pole vector based on smooth weights.
+--
+-- Anatomical intentions:
+--   - Hand above shoulder: elbow forward and outward (banzai pose)
+--   - Hand in front: elbow outward and down
+--   - Hand behind: elbow outward
+--   - Hand below shoulder: elbow backward and outward
+--   - Default (hand at side): elbow backward
 --
 computeArmPoleVector :: Float -> Float -> Float -> Bool -> V3 Float
-computeArmPoleVector dx dy dz isRight =
+computeArmPoleVector _dx dy dz isRight =
   let -- Lateral direction (outward from body)
       -- Right arm: +X is outward, Left arm: -X is outward
       outward = if isRight then 1.0 else (-1.0)
 
-      -- Determine pole vector based on hand position relative to shoulder
-      poleVector
-        -- Hand significantly above shoulder (dy > 0.3): elbow forward and outward
-        | dy > 0.3 = V3 (outward * 0.3) 0 0.7
+      -- Base pole vectors for each direction
+      poleUp    = V3 (outward * 0.3) 0 0.7       -- elbow forward/outward
+      poleDown  = V3 (outward * 0.3) 0 (-0.7)   -- elbow backward/outward
+      poleFront = V3 (outward * 0.5) (-0.5) 0   -- elbow outward/down
+      poleBack  = V3 (outward * 0.7) 0 0.3      -- elbow outward
+      poleDefault = V3 (outward * 0.2) 0 (-0.6) -- neutral position
 
-        -- Hand in front (dz > 0.3): elbow outward and down
-        | dz > 0.3 = V3 (outward * 0.5) (-0.5) 0
+      -- Compute smooth weights for each direction
+      -- smoothstep provides smooth transition in the range [edge0, edge1]
+      weightUp    = smoothstep 0.0 0.5 dy         -- hand going up
+      weightDown  = smoothstep 0.0 0.5 (-dy)      -- hand going down
+      weightFront = smoothstep 0.0 0.5 dz         -- hand going forward
+      weightBack  = smoothstep 0.0 0.5 (-dz)      -- hand going backward
 
-        -- Hand behind (dz < -0.3): elbow outward
-        | dz < (-0.3) = V3 (outward * 0.7) 0 0.3
+      -- Blend all pole vectors based on weights
+      -- Default contributes when no strong directional signal
+      totalWeight = weightUp + weightDown + weightFront + weightBack
+      defaultWeight = max 0 (1.0 - totalWeight)
 
-        -- Hand below shoulder (dy < -0.3): elbow backward and slightly outward
-        | dy < (-0.3) = V3 (outward * 0.3) 0 (-0.7)
+      blendedPole = poleUp ^* weightUp
+                ^+^ poleDown ^* weightDown
+                ^+^ poleFront ^* weightFront
+                ^+^ poleBack ^* weightBack
+                ^+^ poleDefault ^* defaultWeight
 
-        -- Hand roughly at shoulder level, to the side
-        | otherwise = V3 (outward * 0.2) 0 (-0.6)
+  in normalize blendedPole
 
-  in normalize poleVector
+-- | Smooth step function for continuous interpolation
+-- Returns 0 when x <= edge0, 1 when x >= edge1, smooth transition between
+smoothstep :: Float -> Float -> Float -> Float
+smoothstep edge0 edge1 x
+  | x <= edge0 = 0
+  | x >= edge1 = 1
+  | otherwise  = let t = (x - edge0) / (edge1 - edge0)
+                 in t * t * (3 - 2 * t)
 
 -- | Solve a two-bone IK chain using the law of cosines
 --
