@@ -246,19 +246,26 @@ computeLimbMuscle bone muscleId transform pose =
     _ -> 0
 
 -- | Compute muscle for upper limb (UpperArm, UpperLeg)
+-- Uses IK-computed positions from pose, not the fixed skeleton transform
 computeUpperLimbMuscle :: HumanoidBone -> MuscleId -> Transform -> Map.Map HumanoidBone Transform -> Float
-computeUpperLimbMuscle bone muscleId transform pose =
-  case getChildPosition bone pose of
-    Just childPos ->
-      let parentPos = transformPosition transform
+computeUpperLimbMuscle bone muscleId _transform pose =
+  case (Map.lookup bone pose, getChildPosition bone pose) of
+    (Just parentTransform, Just childPos) ->
+      let parentPos = transformPosition parentTransform
           fetusDir = fetusDirection bone
           muscles = positionToMuscles bone parentPos childPos fetusDir
       in case lookup muscleId muscles of
            Just v -> v
            Nothing -> 0
-    Nothing -> 0
+    _ -> 0
 
 -- | Compute muscle for lower limb (LowerArm, LowerLeg) - especially Stretch
+--
+-- Unity Humanoid Lower Leg/Forearm Stretch muscle:
+--   Range: 0° to 145° (flexion from straight)
+--   muscle = 1: fully extended (straight, flexion = 0°)
+--   muscle = 0: center of range (flexion = 72.5°)
+--   muscle = -1: fully bent (flexion = 145°)
 computeLowerLimbMuscle :: HumanoidBone -> MuscleId -> Map.Map HumanoidBone Transform -> Float
 computeLowerLimbMuscle bone muscleId pose =
   let -- Get the three bone positions for angle calculation
@@ -289,13 +296,15 @@ computeLowerLimbMuscle bone muscleId pose =
              angleRad = acos (max (-1) (min 1 cosAngle))
              angleDeg = angleRad * 180 / pi
 
-             -- Stretch muscle: 0 = straight (180 deg), 1 = fully bent (~35 deg)
-             -- Unity range: 0-145 degrees of flexion from straight
-             -- Angle from straight = 180 - measured angle
+             -- Flexion angle: 0° = straight (180° measured), 145° = fully bent (35° measured)
              flexionAngle = 180 - angleDeg
 
-             -- Normalize to 0-1 range (0 = straight, 1 = max flexion)
-             stretchValue = max 0 (min 1 (flexionAngle / 145))
+             -- Convert flexion angle to muscle value
+             -- Range is 0° to 145°, muscle range is -1 to 1
+             -- muscle = 1 - (flexion / 72.5) = 1 at 0°, 0 at 72.5°, -1 at 145°
+             -- Or equivalently: muscle = (min - flexion) / (range/2) + 0 = ...
+             -- Simpler: muscle = 1 - (flexion / 72.5) clamped to [-1, 1]
+             stretchValue = clamp (-1) 1 (1 - flexionAngle / 72.5)
 
          in case muscleId of
               RightLegStretch -> stretchValue
@@ -312,6 +321,7 @@ computeLowerLimbMuscle bone muscleId pose =
   where
     dotV (V3 x1 y1 z1) (V3 x2 y2 z2) = x1*x2 + y1*y2 + z1*z2
     normV (V3 x y z) = sqrt (x*x + y*y + z*z)
+    clamp lo hi x = max lo (min hi x)
 
 -- | Get child bone position for a given bone
 getChildPosition :: HumanoidBone -> Map.Map HumanoidBone Transform -> Maybe (V3 Float)

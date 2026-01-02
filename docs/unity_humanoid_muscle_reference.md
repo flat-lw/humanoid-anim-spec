@@ -18,6 +18,79 @@ UnityのHumanoidアニメーションシステム（Mecanim）は、スケルト
 
 ---
 
+## Muscle値と角度の対応
+
+### 基本的なマッピング
+
+Muscle値は正規化された値 [-1, 1] で、角度範囲 [min, max] にマッピングされます。
+
+| Muscle値 | 対応する角度 | 説明 |
+|---------|-------------|------|
+| **-1** | min角度 | 負方向の最大回転 |
+| **0** | center（静止位置） | デフォルトの静止状態 |
+| **+1** | max角度 | 正方向の最大回転 |
+
+### Muscle名と方向の対応
+
+Muscle名は「A-B」形式（例: Front-Back, Down-Up）で命名されており、以下の規則に従います：
+
+| Muscle値 | 対応する方向 |
+|---------|-------------|
+| **-1** | 最初の単語（A）の方向 |
+| **+1** | 2番目の単語（B）の方向 |
+
+**例**:
+- "Left Upper Leg **Front-Back**" → -1 = 前(Front)、+1 = 後ろ(Back)
+- "Left Arm **Down-Up**" → -1 = 下(Down)、+1 = 上(Up)
+- "Head Tilt **Left-Right**" → -1 = 左(Left)、+1 = 右(Right)
+- "Left Forearm **Stretch**" → -1 = 曲げる、+1 = 伸ばす
+- "Left Arm **Twist In-Out**" → -1 = 内ひねり(In)、+1 = 外ひねり(Out)
+
+> ⚠️ **注意**: この命名規則はUnity公式ドキュメントには明記されていません。実機での検証に基づく推測です。実際のプロジェクトでは、使用前に動作を確認することを推奨します。
+
+### 計算式
+
+```
+角度 = center + muscle_value * (muscle_value >= 0 ? max : -min)
+```
+
+より一般的な線形補間として：
+
+```
+if (muscle_value >= 0):
+    角度 = center + muscle_value * max
+else:
+    角度 = center + muscle_value * (-min)
+```
+
+**注意**: Muscle値は [-1, 1] の範囲外に出ることも可能です（オーバーシュート）。範囲はハードリミットではなく、通常の動作範囲を定義しています。
+
+### 具体例
+
+**Left Arm Down-Up** (Index 39) の場合：
+- デフォルト範囲: min = -60°, max = 100°
+
+| Muscle値 | 計算 | 結果角度 |
+|---------|------|---------|
+| -1.0 | 0 + (-1.0) × (-(-60)) = -60 | **-60°**（腕を下げる） |
+| -0.5 | 0 + (-0.5) × (-(-60)) = -30 | **-30°** |
+| 0.0 | 0 | **0°**（静止位置） |
+| +0.5 | 0 + 0.5 × 100 = 50 | **+50°** |
+| +1.0 | 0 + 1.0 × 100 = 100 | **+100°**（腕を上げる） |
+
+### HumanLimitの構成要素
+
+Avatarの各Muscleには以下の設定があります：
+
+| プロパティ | 説明 | 範囲 |
+|-----------|------|------|
+| **min** | 負方向の最大回転角度 | -180° ~ 0° |
+| **max** | 正方向の最大回転角度 | 0° ~ 180° |
+| **center** | 静止位置のオフセット | - |
+| **useDefaultValues** | デフォルト値を使用するか | bool |
+
+---
+
 ## Humanoid Bone一覧（54ボーン）
 
 ### 必須ボーン（15ボーン）
@@ -111,184 +184,190 @@ UnityのHumanoidアニメーションシステム（Mecanim）は、スケルト
 
 ### ボディMuscle（0-54）
 
+**凡例**: `Muscle=-1` → min角度、`Muscle=0` → 静止位置(0°)、`Muscle=+1` → max角度
+
 #### 背骨・胸（0-8）
 
-| Index | Muscle名 | 関連ボーン | 軸 | デフォルト範囲 |
-|-------|----------|-----------|-----|---------------|
-| 0 | Spine Front-Back | Spine | Z | -40° ~ 40° |
-| 1 | Spine Left-Right | Spine | Y | -40° ~ 40° |
-| 2 | Spine Twist Left-Right | Spine | X | -40° ~ 40° |
-| 3 | Chest Front-Back | Chest | Z | -40° ~ 40° |
-| 4 | Chest Left-Right | Chest | Y | -40° ~ 40° |
-| 5 | Chest Twist Left-Right | Chest | X | -40° ~ 40° |
-| 6 | UpperChest Front-Back | UpperChest | Z | -20° ~ 20° |
-| 7 | UpperChest Left-Right | UpperChest | Y | -20° ~ 20° |
-| 8 | UpperChest Twist Left-Right | UpperChest | X | -20° ~ 20° |
+| Index | Muscle名 | ボーン | 軸 | -1時の角度 | +1時の角度 | 動作説明 |
+|-------|----------|--------|-----|-----------|-----------|---------|
+| 0 | Spine Front-Back | Spine | Z | -40° | +40° | 前(-1)↔後ろ(+1) |
+| 1 | Spine Left-Right | Spine | Y | -40° | +40° | 左(-1)↔右(+1) |
+| 2 | Spine Twist Left-Right | Spine | X | -40° | +40° | 左ひねり(-1)↔右ひねり(+1) |
+| 3 | Chest Front-Back | Chest | Z | -40° | +40° | 前(-1)↔後ろ(+1) |
+| 4 | Chest Left-Right | Chest | Y | -40° | +40° | 左(-1)↔右(+1) |
+| 5 | Chest Twist Left-Right | Chest | X | -40° | +40° | 左ひねり(-1)↔右ひねり(+1) |
+| 6 | UpperChest Front-Back | UpperChest | Z | -20° | +20° | 前(-1)↔後ろ(+1) |
+| 7 | UpperChest Left-Right | UpperChest | Y | -20° | +20° | 左(-1)↔右(+1) |
+| 8 | UpperChest Twist Left-Right | UpperChest | X | -20° | +20° | 左ひねり(-1)↔右ひねり(+1) |
 
-#### 首・頭（9-17）
+#### 首・頭（9-20）
 
-| Index | Muscle名 | 関連ボーン | 軸 | デフォルト範囲 |
-|-------|----------|-----------|-----|---------------|
-| 9 | Neck Nod Down-Up | Neck | Z | -40° ~ 40° |
-| 10 | Neck Tilt Left-Right | Neck | Y | -40° ~ 40° |
-| 11 | Neck Turn Left-Right | Neck | X | -40° ~ 40° |
-| 12 | Head Nod Down-Up | Head | Z | -40° ~ 40° |
-| 13 | Head Tilt Left-Right | Head | Y | -40° ~ 40° |
-| 14 | Head Turn Left-Right | Head | X | -40° ~ 40° |
-| 15 | Left Eye Down-Up | LeftEye | Z | -10° ~ 15° |
-| 16 | Left Eye In-Out | LeftEye | Y | -20° ~ 20° |
-| 17 | Right Eye Down-Up | RightEye | Z | -10° ~ 15° |
-| 18 | Right Eye In-Out | RightEye | Y | -20° ~ 20° |
-| 19 | Jaw Close | Jaw | Z | -10° ~ 10° |
-| 20 | Jaw Left-Right | Jaw | Y | -10° ~ 10° |
+| Index | Muscle名 | ボーン | 軸 | -1時の角度 | +1時の角度 | 動作説明 |
+|-------|----------|--------|-----|-----------|-----------|---------|
+| 9 | Neck Nod Down-Up | Neck | Z | -40° | +40° | 下(-1)↔上(+1) |
+| 10 | Neck Tilt Left-Right | Neck | Y | -40° | +40° | 左傾き(-1)↔右傾き(+1) |
+| 11 | Neck Turn Left-Right | Neck | X | -40° | +40° | 左向き(-1)↔右向き(+1) |
+| 12 | Head Nod Down-Up | Head | Z | -40° | +40° | 下(-1)↔上(+1) |
+| 13 | Head Tilt Left-Right | Head | Y | -40° | +40° | 左傾き(-1)↔右傾き(+1) |
+| 14 | Head Turn Left-Right | Head | X | -40° | +40° | 左向き(-1)↔右向き(+1) |
+| 15 | Left Eye Down-Up | LeftEye | Z | -10° | +15° | 下(-1)↔上(+1) |
+| 16 | Left Eye In-Out | LeftEye | Y | -20° | +20° | 内側(-1)↔外側(+1) |
+| 17 | Right Eye Down-Up | RightEye | Z | -10° | +15° | 下(-1)↔上(+1) |
+| 18 | Right Eye In-Out | RightEye | Y | -20° | +20° | 内側(-1)↔外側(+1) |
+| 19 | Jaw Close | Jaw | Z | -10° | +10° | 開く(-1)↔閉じる(+1) |
+| 20 | Jaw Left-Right | Jaw | Y | -10° | +10° | 左(-1)↔右(+1) |
 
 #### 左脚（21-28）
 
-| Index | Muscle名 | 関連ボーン | 軸 | デフォルト範囲 |
-|-------|----------|-----------|-----|---------------|
-| 21 | Left Upper Leg Front-Back | LeftUpperLeg | Z | -90° ~ 50° |
-| 22 | Left Upper Leg In-Out | LeftUpperLeg | Y | -60° ~ 60° |
-| 23 | Left Upper Leg Twist In-Out | LeftUpperLeg | X | -60° ~ 60° |
-| 24 | Left Lower Leg Stretch | LeftLowerLeg | Z | -80° ~ 5° |
-| 25 | Left Lower Leg Twist In-Out | LeftLowerLeg | X | -90° ~ 90° |
-| 26 | Left Foot Up-Down | LeftFoot | Z | -50° ~ 50° |
-| 27 | Left Foot Twist In-Out | LeftFoot | X | -30° ~ 30° |
-| 28 | Left Toes Up-Down | LeftToes | Z | -50° ~ 50° |
+| Index | Muscle名 | ボーン | 軸 | -1時の角度 | +1時の角度 | 動作説明 |
+|-------|----------|--------|-----|-----------|-----------|---------|
+| 21 | Left Upper Leg Front-Back | LeftUpperLeg | Z | -90° | +50° | 前(-1)↔後ろ(+1) |
+| 22 | Left Upper Leg In-Out | LeftUpperLeg | Y | -60° | +60° | 内側(-1)↔外側(+1) |
+| 23 | Left Upper Leg Twist In-Out | LeftUpperLeg | X | -60° | +60° | 内ひねり(-1)↔外ひねり(+1) |
+| 24 | Left Lower Leg Stretch | LeftLowerLeg | Z | -80° | +5° | 曲げる(-1)↔伸ばす(+1) |
+| 25 | Left Lower Leg Twist In-Out | LeftLowerLeg | X | -90° | +90° | 内ひねり(-1)↔外ひねり(+1) |
+| 26 | Left Foot Up-Down | LeftFoot | Z | -50° | +50° | 下(-1)↔上(+1) |
+| 27 | Left Foot Twist In-Out | LeftFoot | X | -30° | +30° | 内ひねり(-1)↔外ひねり(+1) |
+| 28 | Left Toes Up-Down | LeftToes | Z | -50° | +50° | 下(-1)↔上(+1) |
 
 #### 右脚（29-36）
 
-| Index | Muscle名 | 関連ボーン | 軸 | デフォルト範囲 |
-|-------|----------|-----------|-----|---------------|
-| 29 | Right Upper Leg Front-Back | RightUpperLeg | Z | -90° ~ 50° |
-| 30 | Right Upper Leg In-Out | RightUpperLeg | Y | -60° ~ 60° |
-| 31 | Right Upper Leg Twist In-Out | RightUpperLeg | X | -60° ~ 60° |
-| 32 | Right Lower Leg Stretch | RightLowerLeg | Z | -80° ~ 5° |
-| 33 | Right Lower Leg Twist In-Out | RightLowerLeg | X | -90° ~ 90° |
-| 34 | Right Foot Up-Down | RightFoot | Z | -50° ~ 50° |
-| 35 | Right Foot Twist In-Out | RightFoot | X | -30° ~ 30° |
-| 36 | Right Toes Up-Down | RightToes | Z | -50° ~ 50° |
+| Index | Muscle名 | ボーン | 軸 | -1時の角度 | +1時の角度 | 動作説明 |
+|-------|----------|--------|-----|-----------|-----------|---------|
+| 29 | Right Upper Leg Front-Back | RightUpperLeg | Z | -90° | +50° | 前(-1)↔後ろ(+1) |
+| 30 | Right Upper Leg In-Out | RightUpperLeg | Y | -60° | +60° | 内側(-1)↔外側(+1) |
+| 31 | Right Upper Leg Twist In-Out | RightUpperLeg | X | -60° | +60° | 内ひねり(-1)↔外ひねり(+1) |
+| 32 | Right Lower Leg Stretch | RightLowerLeg | Z | -80° | +5° | 曲げる(-1)↔伸ばす(+1) |
+| 33 | Right Lower Leg Twist In-Out | RightLowerLeg | X | -90° | +90° | 内ひねり(-1)↔外ひねり(+1) |
+| 34 | Right Foot Up-Down | RightFoot | Z | -50° | +50° | 下(-1)↔上(+1) |
+| 35 | Right Foot Twist In-Out | RightFoot | X | -30° | +30° | 内ひねり(-1)↔外ひねり(+1) |
+| 36 | Right Toes Up-Down | RightToes | Z | -50° | +50° | 下(-1)↔上(+1) |
 
 #### 左腕（37-45）
 
-| Index | Muscle名 | 関連ボーン | 軸 | デフォルト範囲 |
-|-------|----------|-----------|-----|---------------|
-| 37 | Left Shoulder Down-Up | LeftShoulder | Z | -15° ~ 30° |
-| 38 | Left Shoulder Front-Back | LeftShoulder | Y | -15° ~ 15° |
-| 39 | Left Arm Down-Up | LeftUpperArm | Z | -60° ~ 100° |
-| 40 | Left Arm Front-Back | LeftUpperArm | Y | -100° ~ 100° |
-| 41 | Left Arm Twist In-Out | LeftUpperArm | X | -90° ~ 90° |
-| 42 | Left Forearm Stretch | LeftLowerArm | Z | -80° ~ 5° |
-| 43 | Left Forearm Twist In-Out | LeftLowerArm | X | -90° ~ 90° |
-| 44 | Left Hand Down-Up | LeftHand | Z | -80° ~ 80° |
-| 45 | Left Hand In-Out | LeftHand | Y | -40° ~ 40° |
+| Index | Muscle名 | ボーン | 軸 | -1時の角度 | +1時の角度 | 動作説明 |
+|-------|----------|--------|-----|-----------|-----------|---------|
+| 37 | Left Shoulder Down-Up | LeftShoulder | Z | -15° | +30° | 下(-1)↔上(+1) |
+| 38 | Left Shoulder Front-Back | LeftShoulder | Y | -15° | +15° | 前(-1)↔後ろ(+1) |
+| 39 | Left Arm Down-Up | LeftUpperArm | Z | -60° | +100° | 下(-1)↔上(+1) |
+| 40 | Left Arm Front-Back | LeftUpperArm | Y | -100° | +100° | 前(-1)↔後ろ(+1) |
+| 41 | Left Arm Twist In-Out | LeftUpperArm | X | -90° | +90° | 内ひねり(-1)↔外ひねり(+1) |
+| 42 | Left Forearm Stretch | LeftLowerArm | Z | -80° | +5° | 曲げる(-1)↔伸ばす(+1) |
+| 43 | Left Forearm Twist In-Out | LeftLowerArm | X | -90° | +90° | 内ひねり(-1)↔外ひねり(+1) |
+| 44 | Left Hand Down-Up | LeftHand | Z | -80° | +80° | 下(-1)↔上(+1) |
+| 45 | Left Hand In-Out | LeftHand | Y | -40° | +40° | 内(-1)↔外(+1) |
 
 #### 右腕（46-54）
 
-| Index | Muscle名 | 関連ボーン | 軸 | デフォルト範囲 |
-|-------|----------|-----------|-----|---------------|
-| 46 | Right Shoulder Down-Up | RightShoulder | Z | -15° ~ 30° |
-| 47 | Right Shoulder Front-Back | RightShoulder | Y | -15° ~ 15° |
-| 48 | Right Arm Down-Up | RightUpperArm | Z | -60° ~ 100° |
-| 49 | Right Arm Front-Back | RightUpperArm | Y | -100° ~ 100° |
-| 50 | Right Arm Twist In-Out | RightUpperArm | X | -90° ~ 90° |
-| 51 | Right Forearm Stretch | RightLowerArm | Z | -80° ~ 5° |
-| 52 | Right Forearm Twist In-Out | RightLowerArm | X | -90° ~ 90° |
-| 53 | Right Hand Down-Up | RightHand | Z | -80° ~ 80° |
-| 54 | Right Hand In-Out | RightHand | Y | -40° ~ 40° |
+| Index | Muscle名 | ボーン | 軸 | -1時の角度 | +1時の角度 | 動作説明 |
+|-------|----------|--------|-----|-----------|-----------|---------|
+| 46 | Right Shoulder Down-Up | RightShoulder | Z | -15° | +30° | 下(-1)↔上(+1) |
+| 47 | Right Shoulder Front-Back | RightShoulder | Y | -15° | +15° | 前(-1)↔後ろ(+1) |
+| 48 | Right Arm Down-Up | RightUpperArm | Z | -60° | +100° | 下(-1)↔上(+1) |
+| 49 | Right Arm Front-Back | RightUpperArm | Y | -100° | +100° | 前(-1)↔後ろ(+1) |
+| 50 | Right Arm Twist In-Out | RightUpperArm | X | -90° | +90° | 内ひねり(-1)↔外ひねり(+1) |
+| 51 | Right Forearm Stretch | RightLowerArm | Z | -80° | +5° | 曲げる(-1)↔伸ばす(+1) |
+| 52 | Right Forearm Twist In-Out | RightLowerArm | X | -90° | +90° | 内ひねり(-1)↔外ひねり(+1) |
+| 53 | Right Hand Down-Up | RightHand | Z | -80° | +80° | 下(-1)↔上(+1) |
+| 54 | Right Hand In-Out | RightHand | Y | -40° | +40° | 内(-1)↔外(+1) |
 
 ### 左手指Muscle（55-74）
 
+**指のMuscle動作**:
+- **Stretched**: -1 = 曲げる（握る）、+1 = 伸ばす（開く）
+- **Spread**: -1 = 閉じる（内側）、+1 = 開く（外側）
+
 #### 左親指（55-58）
 
-| Index | Muscle名 | デフォルト範囲 |
-|-------|----------|---------------|
-| 55 | Left Thumb 1 Stretched | -20° ~ 20° |
-| 56 | Left Thumb Spread | -25° ~ 25° |
-| 57 | Left Thumb 2 Stretched | -40° ~ 35° |
-| 58 | Left Thumb 3 Stretched | -40° ~ 35° |
+| Index | Muscle名 | -1時の角度 | +1時の角度 | 動作説明 |
+|-------|----------|-----------|-----------|---------|
+| 55 | Left Thumb 1 Stretched | -20° | +20° | 曲げ(-1)↔伸ばし(+1) |
+| 56 | Left Thumb Spread | -25° | +25° | 閉じ(-1)↔開き(+1) |
+| 57 | Left Thumb 2 Stretched | -40° | +35° | 曲げ(-1)↔伸ばし(+1) |
+| 58 | Left Thumb 3 Stretched | -40° | +35° | 曲げ(-1)↔伸ばし(+1) |
 
 #### 左人差し指（59-62）
 
-| Index | Muscle名 | デフォルト範囲 |
-|-------|----------|---------------|
-| 59 | Left Index 1 Stretched | -50° ~ 50° |
-| 60 | Left Index Spread | -20° ~ 20° |
-| 61 | Left Index 2 Stretched | -45° ~ 45° |
-| 62 | Left Index 3 Stretched | -45° ~ 45° |
+| Index | Muscle名 | -1時の角度 | +1時の角度 | 動作説明 |
+|-------|----------|-----------|-----------|---------|
+| 59 | Left Index 1 Stretched | -50° | +50° | 曲げ(-1)↔伸ばし(+1) |
+| 60 | Left Index Spread | -20° | +20° | 閉じ(-1)↔開き(+1) |
+| 61 | Left Index 2 Stretched | -45° | +45° | 曲げ(-1)↔伸ばし(+1) |
+| 62 | Left Index 3 Stretched | -45° | +45° | 曲げ(-1)↔伸ばし(+1) |
 
 #### 左中指（63-66）
 
-| Index | Muscle名 | デフォルト範囲 |
-|-------|----------|---------------|
-| 63 | Left Middle 1 Stretched | -50° ~ 50° |
-| 64 | Left Middle Spread | -7.5° ~ 7.5° |
-| 65 | Left Middle 2 Stretched | -45° ~ 45° |
-| 66 | Left Middle 3 Stretched | -45° ~ 45° |
+| Index | Muscle名 | -1時の角度 | +1時の角度 | 動作説明 |
+|-------|----------|-----------|-----------|---------|
+| 63 | Left Middle 1 Stretched | -50° | +50° | 曲げ(-1)↔伸ばし(+1) |
+| 64 | Left Middle Spread | -7.5° | +7.5° | 閉じ(-1)↔開き(+1) |
+| 65 | Left Middle 2 Stretched | -45° | +45° | 曲げ(-1)↔伸ばし(+1) |
+| 66 | Left Middle 3 Stretched | -45° | +45° | 曲げ(-1)↔伸ばし(+1) |
 
 #### 左薬指（67-70）
 
-| Index | Muscle名 | デフォルト範囲 |
-|-------|----------|---------------|
-| 67 | Left Ring 1 Stretched | -50° ~ 50° |
-| 68 | Left Ring Spread | -7.5° ~ 7.5° |
-| 69 | Left Ring 2 Stretched | -45° ~ 45° |
-| 70 | Left Ring 3 Stretched | -45° ~ 45° |
+| Index | Muscle名 | -1時の角度 | +1時の角度 | 動作説明 |
+|-------|----------|-----------|-----------|---------|
+| 67 | Left Ring 1 Stretched | -50° | +50° | 曲げ(-1)↔伸ばし(+1) |
+| 68 | Left Ring Spread | -7.5° | +7.5° | 閉じ(-1)↔開き(+1) |
+| 69 | Left Ring 2 Stretched | -45° | +45° | 曲げ(-1)↔伸ばし(+1) |
+| 70 | Left Ring 3 Stretched | -45° | +45° | 曲げ(-1)↔伸ばし(+1) |
 
 #### 左小指（71-74）
 
-| Index | Muscle名 | デフォルト範囲 |
-|-------|----------|---------------|
-| 71 | Left Little 1 Stretched | -50° ~ 50° |
-| 72 | Left Little Spread | -20° ~ 20° |
-| 73 | Left Little 2 Stretched | -45° ~ 45° |
-| 74 | Left Little 3 Stretched | -45° ~ 45° |
+| Index | Muscle名 | -1時の角度 | +1時の角度 | 動作説明 |
+|-------|----------|-----------|-----------|---------|
+| 71 | Left Little 1 Stretched | -50° | +50° | 曲げ(-1)↔伸ばし(+1) |
+| 72 | Left Little Spread | -20° | +20° | 閉じ(-1)↔開き(+1) |
+| 73 | Left Little 2 Stretched | -45° | +45° | 曲げ(-1)↔伸ばし(+1) |
+| 74 | Left Little 3 Stretched | -45° | +45° | 曲げ(-1)↔伸ばし(+1) |
 
 ### 右手指Muscle（75-94）
 
 #### 右親指（75-78）
 
-| Index | Muscle名 | デフォルト範囲 |
-|-------|----------|---------------|
-| 75 | Right Thumb 1 Stretched | -20° ~ 20° |
-| 76 | Right Thumb Spread | -25° ~ 25° |
-| 77 | Right Thumb 2 Stretched | -40° ~ 35° |
-| 78 | Right Thumb 3 Stretched | -40° ~ 35° |
+| Index | Muscle名 | -1時の角度 | +1時の角度 | 動作説明 |
+|-------|----------|-----------|-----------|---------|
+| 75 | Right Thumb 1 Stretched | -20° | +20° | 曲げ(-1)↔伸ばし(+1) |
+| 76 | Right Thumb Spread | -25° | +25° | 閉じ(-1)↔開き(+1) |
+| 77 | Right Thumb 2 Stretched | -40° | +35° | 曲げ(-1)↔伸ばし(+1) |
+| 78 | Right Thumb 3 Stretched | -40° | +35° | 曲げ(-1)↔伸ばし(+1) |
 
 #### 右人差し指（79-82）
 
-| Index | Muscle名 | デフォルト範囲 |
-|-------|----------|---------------|
-| 79 | Right Index 1 Stretched | -50° ~ 50° |
-| 80 | Right Index Spread | -20° ~ 20° |
-| 81 | Right Index 2 Stretched | -45° ~ 45° |
-| 82 | Right Index 3 Stretched | -45° ~ 45° |
+| Index | Muscle名 | -1時の角度 | +1時の角度 | 動作説明 |
+|-------|----------|-----------|-----------|---------|
+| 79 | Right Index 1 Stretched | -50° | +50° | 曲げ(-1)↔伸ばし(+1) |
+| 80 | Right Index Spread | -20° | +20° | 閉じ(-1)↔開き(+1) |
+| 81 | Right Index 2 Stretched | -45° | +45° | 曲げ(-1)↔伸ばし(+1) |
+| 82 | Right Index 3 Stretched | -45° | +45° | 曲げ(-1)↔伸ばし(+1) |
 
 #### 右中指（83-86）
 
-| Index | Muscle名 | デフォルト範囲 |
-|-------|----------|---------------|
-| 83 | Right Middle 1 Stretched | -50° ~ 50° |
-| 84 | Right Middle Spread | -7.5° ~ 7.5° |
-| 85 | Right Middle 2 Stretched | -45° ~ 45° |
-| 86 | Right Middle 3 Stretched | -45° ~ 45° |
+| Index | Muscle名 | -1時の角度 | +1時の角度 | 動作説明 |
+|-------|----------|-----------|-----------|---------|
+| 83 | Right Middle 1 Stretched | -50° | +50° | 曲げ(-1)↔伸ばし(+1) |
+| 84 | Right Middle Spread | -7.5° | +7.5° | 閉じ(-1)↔開き(+1) |
+| 85 | Right Middle 2 Stretched | -45° | +45° | 曲げ(-1)↔伸ばし(+1) |
+| 86 | Right Middle 3 Stretched | -45° | +45° | 曲げ(-1)↔伸ばし(+1) |
 
 #### 右薬指（87-90）
 
-| Index | Muscle名 | デフォルト範囲 |
-|-------|----------|---------------|
-| 87 | Right Ring 1 Stretched | -50° ~ 50° |
-| 88 | Right Ring Spread | -7.5° ~ 7.5° |
-| 89 | Right Ring 2 Stretched | -45° ~ 45° |
-| 90 | Right Ring 3 Stretched | -45° ~ 45° |
+| Index | Muscle名 | -1時の角度 | +1時の角度 | 動作説明 |
+|-------|----------|-----------|-----------|---------|
+| 87 | Right Ring 1 Stretched | -50° | +50° | 曲げ(-1)↔伸ばし(+1) |
+| 88 | Right Ring Spread | -7.5° | +7.5° | 閉じ(-1)↔開き(+1) |
+| 89 | Right Ring 2 Stretched | -45° | +45° | 曲げ(-1)↔伸ばし(+1) |
+| 90 | Right Ring 3 Stretched | -45° | +45° | 曲げ(-1)↔伸ばし(+1) |
 
 #### 右小指（91-94）
 
-| Index | Muscle名 | デフォルト範囲 |
-|-------|----------|---------------|
-| 91 | Right Little 1 Stretched | -50° ~ 50° |
-| 92 | Right Little Spread | -20° ~ 20° |
-| 93 | Right Little 2 Stretched | -45° ~ 45° |
-| 94 | Right Little 3 Stretched | -45° ~ 45° |
+| Index | Muscle名 | -1時の角度 | +1時の角度 | 動作説明 |
+|-------|----------|-----------|-----------|---------|
+| 91 | Right Little 1 Stretched | -50° | +50° | 曲げ(-1)↔伸ばし(+1) |
+| 92 | Right Little Spread | -20° | +20° | 閉じ(-1)↔開き(+1) |
+| 93 | Right Little 2 Stretched | -45° | +45° | 曲げ(-1)↔伸ばし(+1) |
+| 94 | Right Little 3 Stretched | -45° | +45° | 曲げ(-1)↔伸ばし(+1) |
 
 ---
 
@@ -459,4 +538,5 @@ Humanoid RigはTwistボーンをサポートしていませんが、Mecanimソ�
 
 ## 更新履歴
 
+- 2026-01-02: Muscle名と方向の対応規則を追加、全Muscleの方向説明を修正
 - 2026-01-01: 初版作成

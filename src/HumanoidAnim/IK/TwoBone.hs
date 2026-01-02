@@ -275,12 +275,13 @@ solveInverseChains cfg skeleton pose _fixedCs chains =
         poleVector = computeNaturalPoleVector (limbEnd chain) rootPos fixedEndPos
 
         -- Solve Two-Bone IK from root to fixed end
-        (midPos, actualEndPos, err) = solveTwoBoneChain rootPos fixedEndPos len1 len2 poleVector
+        (midPos, _actualEndPos, err) = solveTwoBoneChain rootPos fixedEndPos len1 len2 poleVector
 
         -- Update pose with computed positions
+        -- Use fixedEndPos (not actualEndPos) to ensure the foot stays fixed
         newPose = Map.insert (limbRoot chain) rootPos $
                   Map.insert (limbMid chain) midPos $
-                  Map.insert (limbEnd chain) actualEndPos currentPose
+                  Map.insert (limbEnd chain) fixedEndPos currentPose
 
         conv = err < twoBoneTolerance cfg
 

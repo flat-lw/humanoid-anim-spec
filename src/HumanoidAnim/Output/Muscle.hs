@@ -865,38 +865,45 @@ computeUpperLegMuscles
   -> V3 Float  -- ^ Fetus position direction (reference)
   -> Bool      -- ^ Is right side
   -> [(MuscleId, MuscleValue)]
-computeUpperLegMuscles frontBackId inOutId twistId dir fetusDir isRight =
+computeUpperLegMuscles frontBackId inOutId twistId dir _fetusDir isRight =
   let V3 dx dy dz = dir
-      V3 fdx fdy fdz = fetusDir
 
-      -- Front-Back: angle from vertical in sagittal plane (XZ when viewed from side)
-      -- Leg pointing forward = positive angle
-      verticalDist = abs dy
-      currentAngleZ = if verticalDist < 0.0001
-                      then if dz >= 0 then 90 else (-90)
-                      else atan2 dz verticalDist * 180 / pi
+      -- Unity Humanoid Upper Leg muscle mapping:
+      -- Front-Back: Range -90° to 50° (total 140°)
+      --   - muscle = -1: leg forward (toward avatar's front)
+      --   - muscle = 0: Fetus Position
+      --   - muscle = +1: leg backward (toward avatar's back)
+      --
+      -- The angle is measured from vertical (negative Y) in the sagittal plane (YZ plane)
+      -- We negate Z to get: forward = negative angle, backward = positive angle
 
-      fetusVerticalDist = abs fdy
-      fetusAngleZ = if fetusVerticalDist < 0.0001
-                    then if fdz >= 0 then 90 else (-90)
-                    else atan2 fdz fetusVerticalDist * 180 / pi
+      -- Calculate angle from vertical in sagittal plane
+      -- atan2(-z, -y) gives angle from -Y axis toward -Z axis (so forward = negative)
+      currentAngleFB = atan2 (-dz) (-dy) * 180 / pi
 
-      deltaFrontBack = currentAngleZ - fetusAngleZ
-
+      -- Convert angle to muscle value
       MuscleRange minFB maxFB = muscleDefaultRange frontBackId
-      rangeFB = maxFB - minFB
-      frontBackMuscle = clampF (-1) 1 (deltaFrontBack / (rangeFB / 2))
+      frontBackMuscle = clampF (-1) 1 ((currentAngleFB - minFB) / (maxFB - minFB) * 2 - 1)
 
-      -- In-Out: angle from vertical in frontal plane
-      -- Right leg: outward (positive X) = negative muscle
-      -- Left leg: outward (negative X) = negative muscle
-      currentAngleX = atan2 dx verticalDist * 180 / pi
-      fetusAngleX = atan2 fdx fetusVerticalDist * 180 / pi
-      deltaInOut = currentAngleX - fetusAngleX
-      -- Flip sign for proper In-Out direction
-      inOutMuscle = if isRight
-                    then clampF (-1) 1 (-deltaInOut / 60)
-                    else clampF (-1) 1 (deltaInOut / 60)
+      -- In-Out: Range -60° to 60° (total 120°)
+      -- Unity Humanoid convention (naming rule: In=-1, Out=+1):
+      --   - muscle = -1: leg inward (adduction)
+      --   - muscle = 0: straight down
+      --   - muscle = +1: leg outward (abduction)
+      --
+      -- The angle is measured from vertical in the frontal plane (XY plane)
+      -- For right leg: positive X = outward, we want Out = positive muscle
+      -- For left leg: negative X = outward, we want Out = positive muscle
+      -- We negate X for right leg to get: inward = negative angle, outward = positive
+
+      -- Calculate angle from vertical in frontal plane
+      -- Negate dx for right leg so that outward = positive angle
+      adjustedDx = if isRight then (-dx) else dx
+      currentAngleIO = atan2 adjustedDx (-dy) * 180 / pi
+
+      -- Convert to muscle
+      MuscleRange minIO maxIO = muscleDefaultRange inOutId
+      inOutMuscle = clampF (-1) 1 ((currentAngleIO - minIO) / (maxIO - minIO) * 2 - 1)
 
       -- Twist: cannot be determined from position alone
       twistMuscle = 0
