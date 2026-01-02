@@ -60,6 +60,8 @@ data AnimationClip = AnimationClip
     -- ^ List of frames
   , clipLoopMode :: LoopMode
     -- ^ Loop mode
+  , clipFixedBones :: [(HumanoidBone, V3 Float)]
+    -- ^ Fixed bones and their target positions (for RootT/RootQ calculation)
   } deriving stock (Show, Eq)
 
 -- | Configuration for animation generation
@@ -112,6 +114,10 @@ generateAnimation config skeleton fixedConstraints effector keyframes name durat
   -- Collect warnings from IK solving
   let allWarnings = concatMap extractWarnings frames
 
+  -- Extract fixed bone positions from constraints
+  let fixedBones = [(bone, pos) | IKCore.Fixed bone pos <- fixedConstraints]
+                ++ [(bone, pos) | IKCore.FixedWithRotation bone pos _ <- fixedConstraints]
+
   -- Build clip
   let clip = AnimationClip
         { clipName = name
@@ -119,6 +125,7 @@ generateAnimation config skeleton fixedConstraints effector keyframes name durat
         , clipFrameRate = genFrameRate config
         , clipFrames = map fst frames
         , clipLoopMode = loopMode
+        , clipFixedBones = fixedBones
         }
 
   addWarnings allWarnings (success clip)

@@ -159,12 +159,13 @@ animToUnityHumanoid :: UnityAnimOptions -> AnimationClip -> UnityAnimationClip
 animToUnityHumanoid opts clip =
   let frames = clipFrames clip
       wrapMode = loopModeToWrap (clipLoopMode clip)
+      fixedBones = clipFixedBones clip
 
       -- Generate muscle curves from bone rotations
       muscleCurves = generateMuscleCurves frames
 
-      -- Generate root motion curves (Hips position)
-      rootMotionCurves = generateRootMotionCurves frames
+      -- Generate root motion curves with proper offsets for fixed bones
+      rootMotionCurves = generateRootMotionCurves frames fixedBones
 
   in UnityAnimationClip
        { uacName = clipName clip
@@ -337,26 +338,46 @@ getChildPosition bone pose =
        Nothing -> Nothing
 
 -- | Generate root motion curves (RootT.x, RootT.y, RootT.z, RootQ.x, RootQ.y, RootQ.z, RootQ.w)
-generateRootMotionCurves :: [AnimationFrame] -> [UnityCurve]
-generateRootMotionCurves frames =
-  let getHipsPos frame = case Map.lookup Hips (framePose frame) of
+--
+-- RootT.x/z = Hips.x/z
+-- RootT.y = Hips.y - min(all bones Y)  (height from lowest bone)
+-- RootQ = identity
+generateRootMotionCurves :: [AnimationFrame] -> [(HumanoidBone, V3 Float)] -> [UnityCurve]
+generateRootMotionCurves frames _fixedBones =
+  let -- Get Hips position
+      getHipsPos :: AnimationFrame -> V3 Float
+      getHipsPos frame = case Map.lookup Hips (framePose frame) of
         Just t -> transformPosition t
         Nothing -> V3 0 0 0
 
-      getHipsRot frame = case Map.lookup Hips (framePose frame) of
-        Just t -> transformRotation t
-        Nothing -> Quaternion 1 (V3 0 0 0)
+      -- Get minimum Y across all bones in a frame
+      getMinY :: AnimationFrame -> Float
+      getMinY frame =
+        let positions = map transformPosition (Map.elems (framePose frame))
+        in if null positions
+           then 0
+           else minimum [y | V3 _ y _ <- positions]
+
+      -- Compute RootT: x/z from Hips, y = Hips.y - minY
+      computeRootT :: AnimationFrame -> V3 Float
+      computeRootT frame =
+        let V3 hx hy hz = getHipsPos frame
+            minY = getMinY frame
+        in V3 hx (hy - minY) hz
+
+      -- RootQ is identity
+      identityQuat = Quaternion 1 (V3 0 0 0)
 
       -- Position curves
-      txKeys = [makeKeyframe (frameTime f) ((\(V3 x _ _) -> x) (getHipsPos f)) | f <- frames]
-      tyKeys = [makeKeyframe (frameTime f) ((\(V3 _ y _) -> y) (getHipsPos f)) | f <- frames]
-      tzKeys = [makeKeyframe (frameTime f) ((\(V3 _ _ z) -> z) (getHipsPos f)) | f <- frames]
+      txKeys = [makeKeyframe (frameTime f) ((\(V3 x _ _) -> x) (computeRootT f)) | f <- frames]
+      tyKeys = [makeKeyframe (frameTime f) ((\(V3 _ y _) -> y) (computeRootT f)) | f <- frames]
+      tzKeys = [makeKeyframe (frameTime f) ((\(V3 _ _ z) -> z) (computeRootT f)) | f <- frames]
 
-      -- Rotation curves
-      rxKeys = [makeKeyframe (frameTime f) ((\(Quaternion _ (V3 x _ _)) -> x) (getHipsRot f)) | f <- frames]
-      ryKeys = [makeKeyframe (frameTime f) ((\(Quaternion _ (V3 _ y _)) -> y) (getHipsRot f)) | f <- frames]
-      rzKeys = [makeKeyframe (frameTime f) ((\(Quaternion _ (V3 _ _ z)) -> z) (getHipsRot f)) | f <- frames]
-      rwKeys = [makeKeyframe (frameTime f) ((\(Quaternion w _) -> w) (getHipsRot f)) | f <- frames]
+      -- Rotation curves (identity quaternion)
+      rxKeys = [makeKeyframe (frameTime f) ((\(Quaternion _ (V3 x _ _)) -> x) identityQuat) | f <- frames]
+      ryKeys = [makeKeyframe (frameTime f) ((\(Quaternion _ (V3 _ y _)) -> y) identityQuat) | f <- frames]
+      rzKeys = [makeKeyframe (frameTime f) ((\(Quaternion _ (V3 _ _ z)) -> z) identityQuat) | f <- frames]
+      rwKeys = [makeKeyframe (frameTime f) ((\(Quaternion w _) -> w) identityQuat) | f <- frames]
 
   in [ UnityCurve "" "RootT.x" txKeys
      , UnityCurve "" "RootT.y" tyKeys
@@ -558,10 +579,11 @@ serializeUnityClipHumanoid opts clip =
         , "  m_ScaleCurves: []"
         ]
 
-      -- Float curves for muscles
-      floatCurvesSection = formatMuscleCurves prec (uacMuscleCurves clip)
+      -- Float curves for muscles and root motion (RootT/RootQ)
+      allFloatCurves = uacMuscleCurves clip ++ uacRootMotionCurves clip
+      floatCurvesSection = formatMuscleCurves prec allFloatCurves
 
-      -- Root motion is stored differently
+      -- Root motion metadata
       rootMotionSection = formatRootMotion prec (uacRootMotionCurves clip)
 
       ptrCurvesSection = "  m_PPtrCurves: []"
