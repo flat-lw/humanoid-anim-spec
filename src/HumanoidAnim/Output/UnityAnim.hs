@@ -38,6 +38,7 @@ import HumanoidAnim.Animation
 import HumanoidAnim.Output.Muscle
 import HumanoidAnim.Skeleton.Bones
 import HumanoidAnim.Skeleton.Config (Transform(..))
+import HumanoidAnim.Skeleton.Hierarchy (boneParent)
 
 -- | Animation type for export
 data AnimationType
@@ -215,17 +216,12 @@ generateMuscleKeyframe matchingBones muscleId frame =
         (bone:_) ->
           case Map.lookup bone (framePose frame) of
             Just transform ->
-              -- For limb bones, use position-based calculation
-              if bone `elem` [RightUpperArm, LeftUpperArm, RightUpperLeg, LeftUpperLeg,
-                              RightLowerArm, LeftLowerArm, RightLowerLeg, LeftLowerLeg]
-              then computeLimbMuscle bone muscleId transform (framePose frame)
-              else
-                -- For other bones, use quaternion-based calculation
-                let quat = transformRotation transform
-                    muscles = quaternionToMuscles bone quat
-                in case lookup muscleId muscles of
-                     Just v -> v
-                     Nothing -> 0
+              -- Use quaternion-based calculation for all bones
+              let quat = transformRotation transform
+                  muscles = quaternionToMuscles bone quat
+              in case lookup muscleId muscles of
+                   Just v -> v
+                   Nothing -> 0
             Nothing -> 0
         [] -> 0
   in makeKeyframe (frameTime frame) muscleValue
@@ -248,16 +244,25 @@ computeLimbMuscle bone muscleId transform pose =
 
 -- | Compute muscle for upper limb (UpperArm, UpperLeg)
 -- Uses IK-computed positions from pose, not the fixed skeleton transform
+--
+-- The local coordinate system is defined by the PARENT bone's global rotation.
+-- For example:
+--   - RightUpperArm uses RightShoulder's rotation
+--   - RightUpperLeg uses Hips' rotation
 computeUpperLimbMuscle :: HumanoidBone -> MuscleId -> Transform -> Map.Map HumanoidBone Transform -> Float
 computeUpperLimbMuscle bone muscleId _transform pose =
-  case (Map.lookup bone pose, getChildPosition bone pose) of
-    (Just parentTransform, Just childPos) ->
-      let parentPos = transformPosition parentTransform
-          fetusDir = fetusDirection bone
-          muscles = positionToMuscles bone parentPos childPos fetusDir
-      in case lookup muscleId muscles of
-           Just v -> v
-           Nothing -> 0
+  case (boneParent bone, Map.lookup bone pose, getChildPosition bone pose) of
+    (Just parentBone, Just boneTransform, Just childPos) ->
+      case Map.lookup parentBone pose of
+        Just parentTransform ->
+          let bonePos = transformPosition boneTransform      -- This bone's position
+              parentRot = transformRotation parentTransform  -- Parent bone's global rotation
+              fetusDir = fetusDirection bone
+              muscles = positionToMuscles bone bonePos childPos fetusDir parentRot
+          in case lookup muscleId muscles of
+               Just v -> v
+               Nothing -> 0
+        Nothing -> 0  -- Parent not found in pose
     _ -> 0
 
 -- | Compute muscle for lower limb (LowerArm, LowerLeg) - especially Stretch

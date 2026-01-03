@@ -19,7 +19,7 @@ module HumanoidAnim.Output.Muscle
     -- * Bone Muscle Configuration
   , BoneMuscleConfig(..)
   , MuscleAxisConfig(..)
-  , MeasurementPlane(..)
+  , RotationAxis(..)
   , boneMuscleDatabase
   , findBoneConfig
 
@@ -477,18 +477,19 @@ boneToMuscles bone = case bone of
 -- Bone Muscle Configuration Database
 -- ============================================================================
 
--- | Measurement plane for angle calculation
--- Each plane defines how to project the bone direction to calculate angles
-data MeasurementPlane
-  = SagittalPlane           -- ^ YZ plane - measures Front-Back angles
-  | FrontalPlane Bool       -- ^ XY plane - measures In-Out / Left-Right angles. Bool = signFlip
-  | TwistAxis               -- ^ Rotation around bone axis (cannot be determined from position)
+-- | Rotation axis for angle calculation
+-- Matches Unity Humanoid specification where each muscle is defined by rotation around a specific axis
+data RotationAxis
+  = RotateAroundX Bool    -- ^ X-axis rotation (Twist). Bool = signFlip for left/right symmetry
+  | RotateAroundY Bool    -- ^ Y-axis rotation (Front-Back for arms, In-Out for legs)
+  | RotateAroundZ Bool    -- ^ Z-axis rotation (Down-Up for arms, Front-Back for legs)
+  | NoRotation            -- ^ Twist axis - cannot be determined from position alone
   deriving stock (Show, Eq)
 
 -- | Configuration for a single muscle axis
 data MuscleAxisConfig = MuscleAxisConfig
   { macMuscleId :: MuscleId           -- ^ The muscle ID for this axis
-  , macPlane :: MeasurementPlane      -- ^ Which plane to measure angle in
+  , macRotationAxis :: RotationAxis   -- ^ Which axis to measure rotation around
   } deriving stock (Show, Eq)
 
 -- | Complete muscle configuration for a bone
@@ -500,83 +501,94 @@ data BoneMuscleConfig = BoneMuscleConfig
 
 -- | Database of bone muscle configurations
 -- This centralizes all the bone-specific logic for position-based muscle calculation
+--
+-- Unity Humanoid axis conventions (from unity_humanoid_muscle_reference.md):
+--   Upper Leg: X=Twist, Y=In-Out, Z=Front-Back
+--   Lower Leg: X=Twist, Z=Stretch
+--   Upper Arm: X=Twist, Y=Front-Back, Z=Down-Up
+--   Lower Arm: X=Twist, Z=Stretch
 boneMuscleDatabase :: [BoneMuscleConfig]
 boneMuscleDatabase =
   -- Upper Legs
-  -- In-Out: 内側(-1) ↔ 外側(+1)
+  -- Front-Back: Z-axis rotation
+  -- In-Out: Y-axis rotation
   -- Right leg: outward = +X, so no flip needed
   -- Left leg: outward = -X, so flip needed to make outward = positive
   [ BoneMuscleConfig
       { bmcBone = RightUpperLeg
       , bmcAxes =
-          [ MuscleAxisConfig RightUpperLegFrontBack SagittalPlane
-          , MuscleAxisConfig RightUpperLegInOut (FrontalPlane False)  -- Right: no flip, +X = outward = positive
-          , MuscleAxisConfig RightUpperLegTwistInOut TwistAxis
+          [ MuscleAxisConfig RightUpperLegFrontBack (RotateAroundZ False)
+          , MuscleAxisConfig RightUpperLegInOut (RotateAroundY False)
+          , MuscleAxisConfig RightUpperLegTwistInOut NoRotation
           ]
       , bmcIsRight = True
       }
   , BoneMuscleConfig
       { bmcBone = LeftUpperLeg
       , bmcAxes =
-          [ MuscleAxisConfig LeftUpperLegFrontBack SagittalPlane
-          , MuscleAxisConfig LeftUpperLegInOut (FrontalPlane True)   -- Left: flip, -X = outward, flip to positive
-          , MuscleAxisConfig LeftUpperLegTwistInOut TwistAxis
+          [ MuscleAxisConfig LeftUpperLegFrontBack (RotateAroundZ True)   -- Left: flip for symmetry
+          , MuscleAxisConfig LeftUpperLegInOut (RotateAroundY True)       -- Left: flip for symmetry
+          , MuscleAxisConfig LeftUpperLegTwistInOut NoRotation
           ]
       , bmcIsRight = False
       }
 
   -- Upper Arms
+  -- Down-Up: Z-axis rotation
+  -- Front-Back: Y-axis rotation
   , BoneMuscleConfig
       { bmcBone = RightUpperArm
       , bmcAxes =
-          [ MuscleAxisConfig RightArmDownUp (FrontalPlane False)
-          , MuscleAxisConfig RightArmFrontBack SagittalPlane
-          , MuscleAxisConfig RightArmTwistInOut TwistAxis
+          [ MuscleAxisConfig RightArmDownUp (RotateAroundZ False)
+          , MuscleAxisConfig RightArmFrontBack (RotateAroundY False)
+          , MuscleAxisConfig RightArmTwistInOut NoRotation
           ]
       , bmcIsRight = True
       }
   , BoneMuscleConfig
       { bmcBone = LeftUpperArm
       , bmcAxes =
-          [ MuscleAxisConfig LeftArmDownUp (FrontalPlane False)
-          , MuscleAxisConfig LeftArmFrontBack SagittalPlane
-          , MuscleAxisConfig LeftArmTwistInOut TwistAxis
+          [ MuscleAxisConfig LeftArmDownUp (RotateAroundZ True)   -- Left: flip for symmetry
+          , MuscleAxisConfig LeftArmFrontBack (RotateAroundY False)
+          , MuscleAxisConfig LeftArmTwistInOut NoRotation
           ]
       , bmcIsRight = False
       }
 
   -- Lower Legs
+  -- Stretch: Z-axis rotation
   , BoneMuscleConfig
       { bmcBone = RightLowerLeg
       , bmcAxes =
-          [ MuscleAxisConfig RightLegStretch SagittalPlane
-          , MuscleAxisConfig RightLegTwistInOut TwistAxis
+          [ MuscleAxisConfig RightLegStretch (RotateAroundZ False)
+          , MuscleAxisConfig RightLegTwistInOut NoRotation
           ]
       , bmcIsRight = True
       }
   , BoneMuscleConfig
       { bmcBone = LeftLowerLeg
       , bmcAxes =
-          [ MuscleAxisConfig LeftLegStretch SagittalPlane
-          , MuscleAxisConfig LeftLegTwistInOut TwistAxis
+          [ MuscleAxisConfig LeftLegStretch (RotateAroundZ False)
+          , MuscleAxisConfig LeftLegTwistInOut NoRotation
           ]
       , bmcIsRight = False
       }
 
   -- Lower Arms (Forearms)
+  -- Stretch: Z-axis rotation
   , BoneMuscleConfig
       { bmcBone = RightLowerArm
       , bmcAxes =
-          [ MuscleAxisConfig RightForearmStretch SagittalPlane
-          , MuscleAxisConfig RightForearmTwistInOut TwistAxis
+          [ MuscleAxisConfig RightForearmStretch (RotateAroundZ False)
+          , MuscleAxisConfig RightForearmTwistInOut NoRotation
           ]
       , bmcIsRight = True
       }
   , BoneMuscleConfig
       { bmcBone = LeftLowerArm
       , bmcAxes =
-          [ MuscleAxisConfig LeftForearmStretch SagittalPlane
-          , MuscleAxisConfig LeftForearmTwistInOut TwistAxis
+          [ MuscleAxisConfig LeftForearmStretch (RotateAroundZ False)
+          , MuscleAxisConfig LeftForearmTwistInOut NoRotation
           ]
       , bmcIsRight = False
       }
@@ -590,6 +602,31 @@ findBoneConfig bone = go boneMuscleDatabase
     go (c:cs)
       | bmcBone c == bone = Just c
       | otherwise = go cs
+
+-- | Apply signFlip adjustments from boneMuscleDatabase to euler angles
+-- This ensures left/right symmetry for paired bones
+applySignFlips :: HumanoidBone -> Float -> Float -> Float -> (Float, Float, Float)
+applySignFlips bone rotX rotY rotZ =
+  case findBoneConfig bone of
+    Nothing -> (rotX, rotY, rotZ)  -- No config, no flips
+    Just config ->
+      let flipX = getSignFlip RotateAroundX (bmcAxes config)
+          flipY = getSignFlip RotateAroundY (bmcAxes config)
+          flipZ = getSignFlip RotateAroundZ (bmcAxes config)
+      in (if flipX then -rotX else rotX,
+          if flipY then -rotY else rotY,
+          if flipZ then -rotZ else rotZ)
+  where
+    -- Check if any axis config has signFlip=True for the given axis type
+    getSignFlip :: (Bool -> RotationAxis) -> [MuscleAxisConfig] -> Bool
+    getSignFlip axisCtor configs = any (matchesAxisWithFlip axisCtor) configs
+
+    matchesAxisWithFlip :: (Bool -> RotationAxis) -> MuscleAxisConfig -> Bool
+    matchesAxisWithFlip axisCtor cfg = case macRotationAxis cfg of
+      RotateAroundX True -> case axisCtor True of RotateAroundX _ -> True; _ -> False
+      RotateAroundY True -> case axisCtor True of RotateAroundY _ -> True; _ -> False
+      RotateAroundZ True -> case axisCtor True of RotateAroundZ _ -> True; _ -> False
+      _ -> False
 
 -- | Convert a quaternion rotation to muscle values for a bone
 -- Returns a list of (MuscleId, MuscleValue) pairs
@@ -624,58 +661,58 @@ quaternionToMuscles bone quat =
       --   rotZ = rotation around Z-axis (Front-Back/Stretch)
       (rotX, rotY, rotZ) = quaternionToEulerXYZ deltaQ
 
+      -- Apply signFlip from boneMuscleDatabase for left/right symmetry
+      (adjRotX, adjRotY, adjRotZ) = applySignFlips bone rotX rotY rotZ
+
   in case bone of
     -- Spine bones: [Front-Back, Left-Right, Twist] = [Z, Y, X]
-    Spine -> zipMuscles muscles [rotZ, rotY, rotX]
-    Chest -> zipMuscles muscles [rotZ, rotY, rotX]
-    UpperChest -> zipMuscles muscles [rotZ, rotY, rotX]
+    Spine -> zipMuscles muscles [adjRotZ, adjRotY, adjRotX]
+    Chest -> zipMuscles muscles [adjRotZ, adjRotY, adjRotX]
+    UpperChest -> zipMuscles muscles [adjRotZ, adjRotY, adjRotX]
 
     -- Neck and Head: [Nod, Tilt, Turn] = [Z, Y, X]
-    Neck -> zipMuscles muscles [rotZ, rotY, rotX]
-    Head -> zipMuscles muscles [rotZ, rotY, rotX]
-    Jaw -> zipMuscles muscles [rotZ, rotY]
+    Neck -> zipMuscles muscles [adjRotZ, adjRotY, adjRotX]
+    Head -> zipMuscles muscles [adjRotZ, adjRotY, adjRotX]
+    Jaw -> zipMuscles muscles [adjRotZ, adjRotY]
 
     -- Eyes: [Down-Up, In-Out] = [Z, Y]
-    LeftEye -> zipMuscles muscles [rotZ, rotY]
-    RightEye -> zipMuscles muscles [rotZ, rotY]
+    LeftEye -> zipMuscles muscles [adjRotZ, adjRotY]
+    RightEye -> zipMuscles muscles [adjRotZ, adjRotY]
 
     -- Shoulders: [Down-Up, Front-Back] = [Z, Y]
-    LeftShoulder -> zipMuscles muscles [rotZ, rotY]
-    RightShoulder -> zipMuscles muscles [rotZ, rotY]
+    LeftShoulder -> zipMuscles muscles [adjRotZ, adjRotY]
+    RightShoulder -> zipMuscles muscles [adjRotZ, adjRotY]
 
     -- Upper Arm: [Down-Up, Front-Back, Twist] = [Z, Y, X]
-    -- Note: Right side may need sign flip for symmetry
-    LeftUpperArm -> zipMuscles muscles [rotZ, rotY, rotX]
-    RightUpperArm -> zipMuscles muscles [rotZ, rotY, rotX]
+    LeftUpperArm -> zipMuscles muscles [adjRotZ, adjRotY, adjRotX]
+    RightUpperArm -> zipMuscles muscles [adjRotZ, adjRotY, adjRotX]
 
     -- Lower Arm (Forearm): [Stretch, Twist] = [Z, X]
-    -- Stretch range: -80° ~ 5° (negative = bent, positive = extended)
-    LeftLowerArm -> zipMuscles muscles [rotZ, rotX]
-    RightLowerArm -> zipMuscles muscles [rotZ, rotX]
+    LeftLowerArm -> zipMuscles muscles [adjRotZ, adjRotX]
+    RightLowerArm -> zipMuscles muscles [adjRotZ, adjRotX]
 
     -- Hand: [Down-Up, In-Out] = [Z, Y]
-    LeftHand -> zipMuscles muscles [rotZ, rotY]
-    RightHand -> zipMuscles muscles [rotZ, rotY]
+    LeftHand -> zipMuscles muscles [adjRotZ, adjRotY]
+    RightHand -> zipMuscles muscles [adjRotZ, adjRotY]
 
     -- Upper Leg: [Front-Back, In-Out, Twist] = [Z, Y, X]
-    LeftUpperLeg -> zipMuscles muscles [rotZ, rotY, rotX]
-    RightUpperLeg -> zipMuscles muscles [rotZ, rotY, rotX]
+    LeftUpperLeg -> zipMuscles muscles [adjRotZ, adjRotY, adjRotX]
+    RightUpperLeg -> zipMuscles muscles [adjRotZ, adjRotY, adjRotX]
 
     -- Lower Leg: [Stretch, Twist] = [Z, X]
-    -- Stretch range: -80° ~ 5°
-    LeftLowerLeg -> zipMuscles muscles [rotZ, rotX]
-    RightLowerLeg -> zipMuscles muscles [rotZ, rotX]
+    LeftLowerLeg -> zipMuscles muscles [adjRotZ, adjRotX]
+    RightLowerLeg -> zipMuscles muscles [adjRotZ, adjRotX]
 
     -- Foot: [Up-Down, Twist] = [Z, X]
-    LeftFoot -> zipMuscles muscles [rotZ, rotX]
-    RightFoot -> zipMuscles muscles [rotZ, rotX]
+    LeftFoot -> zipMuscles muscles [adjRotZ, adjRotX]
+    RightFoot -> zipMuscles muscles [adjRotZ, adjRotX]
 
     -- Toes: [Up-Down] = [Z]
-    LeftToes -> zipMuscles muscles [rotZ]
-    RightToes -> zipMuscles muscles [rotZ]
+    LeftToes -> zipMuscles muscles [adjRotZ]
+    RightToes -> zipMuscles muscles [adjRotZ]
 
     -- Fingers: use Z-axis (stretch/curl)
-    _ -> zipMuscles muscles (replicate (length muscles) rotZ)
+    _ -> zipMuscles muscles (replicate (length muscles) adjRotZ)
   where
     zipMuscles :: [MuscleId] -> [Float] -> [(MuscleId, MuscleValue)]
     zipMuscles mids angles = zipWith toMuscle mids (angles ++ repeat 0)
@@ -683,20 +720,15 @@ quaternionToMuscles bone quat =
     toMuscle :: MuscleId -> Float -> (MuscleId, MuscleValue)
     toMuscle mid angle =
       let MuscleRange minA maxA = muscleDefaultRange mid
-          -- Convert angle (in degrees) to muscle value (-1 to 1)
-          -- For "Stretch" muscles (min=0), use 0-to-1 range instead of -1-to-1
-          normalized = if isStretchMuscle mid
-                       then -- Stretch: 0 = min angle, 1 = max angle
-                            let range = maxA - minA
-                            in if range > 0
-                               then clampF 0 1 ((angle - minA) / range)
-                               else 0
-                       else -- Normal: center = 0, map to -1..1
-                            let range = maxA - minA
-                                center = (maxA + minA) / 2
-                            in if range > 0
-                               then clampF (-1) 1 ((angle - center) / (range / 2))
-                               else 0
+          center = muscleCenter mid
+          -- Convert angle (in degrees) to muscle value
+          -- Using the documented formula from unity_humanoid_center_of_mass.md:
+          --   if angle >= center: muscle = (angle - center) / max
+          --   else:               muscle = (angle - center) / (-min)
+          relativeAngle = angle - center
+          normalized = if relativeAngle >= 0
+                       then clampF 0 1 (relativeAngle / maxA)
+                       else clampF (-1) 0 (relativeAngle / (-minA))
       in (mid, normalized)
 
     -- Check if muscle is a "Stretch" type (uses 0-1 range instead of -1-1)
@@ -886,17 +918,18 @@ rotateByInverse q v = rotateV (conjugate q) v
     conjugate (Quaternion w (V3 x y z)) = Quaternion w (V3 (-x) (-y) (-z))
 
 -- | Rotate a vector by a quaternion
+-- Uses Rodrigues' rotation formula: v' = v + 2w(q × v) + 2(q × (q × v))
+-- This is equivalent to q * v * q^(-1) but more efficient
 rotateV :: Quaternion Float -> V3 Float -> V3 Float
-rotateV (Quaternion qw (V3 qx qy qz)) (V3 vx vy vz) =
-  let -- q * v (treating v as quaternion with w=0)
-      tw = -qx*vx - qy*vy - qz*vz
-      tx =  qw*vx + qy*vz - qz*vy
-      ty =  qw*vy + qz*vx - qx*vz
-      tz =  qw*vz + qx*vy - qy*vx
-      -- (q * v) * q^(-1) = (q * v) * conjugate(q)
-      rx = -tw*(-qx) + tx*qw - ty*(-qz) + tz*(-qy)
-      ry = -tw*(-qy) + ty*qw - tz*(-qx) + tx*(-qz)
-      rz = -tw*(-qz) + tz*qw - tx*(-qy) + ty*(-qx)
+rotateV (Quaternion w (V3 qx qy qz)) (V3 vx vy vz) =
+  let -- t = 2 * cross(q.xyz, v)
+      tx = 2 * (qy * vz - qz * vy)
+      ty = 2 * (qz * vx - qx * vz)
+      tz = 2 * (qx * vy - qy * vx)
+      -- result = v + w * t + cross(q.xyz, t)
+      rx = vx + w * tx + (qy * tz - qz * ty)
+      ry = vy + w * ty + (qz * tx - qx * tz)
+      rz = vz + w * tz + (qx * ty - qy * tx)
   in V3 rx ry rz
 
 -- | Compute muscles from bone configuration
@@ -916,21 +949,38 @@ computeAxisMuscle
   -> V3 Float  -- ^ Fetus direction
   -> MuscleAxisConfig
   -> (MuscleId, MuscleValue)
-computeAxisMuscle config dir fetusDir axisConfig =
+computeAxisMuscle _config dir _fetusDir axisConfig =
   let muscleId = macMuscleId axisConfig
-      plane = macPlane axisConfig
-      isRight = bmcIsRight config
+      rotAxis = macRotationAxis axisConfig
 
-      -- Calculate angle based on measurement plane
-      angle = case plane of
-        SagittalPlane -> computeSagittalAngle dir fetusDir
-        FrontalPlane signFlip -> computeFrontalAngle dir fetusDir isRight signFlip
-        TwistAxis -> 0  -- Cannot determine from position
+      -- Calculate angle based on rotation axis
+      angle = computeAngleAroundAxis dir rotAxis
 
       -- Map angle to muscle value
       muscleValue = angleToMuscle muscleId angle
 
   in (muscleId, muscleValue)
+
+-- | Compute angle around a specific axis
+-- The angle is measured from the +X axis (child direction / Fetus pose reference)
+-- in the plane perpendicular to the rotation axis
+computeAngleAroundAxis :: V3 Float -> RotationAxis -> Float
+computeAngleAroundAxis dir rotAxis =
+  let refDir = V3 1 0 0  -- Local X axis = child direction = Fetus pose reference
+  in case rotAxis of
+       RotateAroundX signFlip ->
+         -- X-axis rotation: angle in YZ plane
+         let angle = signedAngleBetween refDir dir (V3 1 0 0)
+         in if signFlip then -angle else angle
+       RotateAroundY signFlip ->
+         -- Y-axis rotation: angle in XZ plane
+         let angle = signedAngleBetween refDir dir (V3 0 1 0)
+         in if signFlip then -angle else angle
+       RotateAroundZ signFlip ->
+         -- Z-axis rotation: angle in XY plane
+         let angle = signedAngleBetween refDir dir (V3 0 0 1)
+         in if signFlip then -angle else angle
+       NoRotation -> 0  -- Cannot determine from position
 
 -- | Calculate signed angle between two vectors around a specified axis
 -- Uses cross product to determine sign
@@ -962,60 +1012,6 @@ dotV (V3 x1 y1 z1) (V3 x2 y2 z2) = x1*x2 + y1*y2 + z1*z2
 crossV :: V3 Float -> V3 Float -> V3 Float
 crossV (V3 x1 y1 z1) (V3 x2 y2 z2) =
   V3 (y1*z2 - z1*y2) (z1*x2 - x1*z2) (x1*y2 - y1*x2)
-
--- | Compute angle in sagittal plane (YZ plane) relative to Fetus Position
--- Used for Front-Back and Stretch muscles
--- Returns the angle difference from Fetus direction
---
--- In local coordinates (after parent rotation is applied):
---   Y-axis = bone's "up" direction
---   Z-axis = bone's "forward" direction
---
--- Front-Back measures rotation around Y-axis (rotation in YZ plane)
-computeSagittalAngle :: V3 Float -> V3 Float -> Float
-computeSagittalAngle dir fetusDir =
-  signedAngleBetween fetusDir dir (V3 1 0 0)  -- Rotation axis is X
-
--- | Compute angle in frontal plane (XY plane) relative to Fetus Position
--- Used for Down-Up muscles (arms and legs)
---
--- Unity specification (from docs):
---   - Down-Up is Z-axis rotation in the bone's local space
---   - Muscle -1 = Down / first word of muscle name
---   - Muscle +1 = Up / second word of muscle name
---   - Fetus pose = Muscle 0
---
--- In local coordinates:
---   Z-axis rotation = rotation in XY plane
---   We measure the angle from Fetus direction to current direction
---   projected onto the XY plane
---
--- Parameters:
---   signFlip: if True, negate the final angle (for left/right symmetry)
-computeFrontalAngle :: V3 Float -> V3 Float -> Bool -> Bool -> Float
-computeFrontalAngle dir fetusDir _isRight signFlip =
-  -- Project onto XY plane (ignore Z component for Z-axis rotation)
-  let V3 dx dy _ = dir
-      V3 fdx fdy _ = fetusDir
-
-      -- Angle of current direction in XY plane (from +X axis, counterclockwise)
-      currentAngle = atan2 dy dx * 180 / pi
-
-      -- Angle of Fetus direction in XY plane
-      fetusAngle = atan2 fdy fdx * 180 / pi
-
-      -- Relative angle (how much we rotated from Fetus)
-      rawDelta = currentAngle - fetusAngle
-
-      -- Normalize to [-180, 180]
-      delta = if rawDelta > 180 then rawDelta - 360
-              else if rawDelta < (-180) then rawDelta + 360
-              else rawDelta
-
-      -- Apply sign flip for left/right symmetry
-      finalDelta = if signFlip then -delta else delta
-
-  in finalDelta
 
 -- | Convert angle (in degrees) to muscle value
 --
