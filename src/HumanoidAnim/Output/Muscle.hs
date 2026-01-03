@@ -37,7 +37,7 @@ import Linear (V3(..), Quaternion(..))
 
 import HumanoidAnim.Skeleton.Bones (HumanoidBone(..))
 import HumanoidAnim.Skeleton.Config (defaultSkeletonConfig, buildSkeleton, Transform(..), Skeleton(..))
-import HumanoidAnim.Skeleton.Transform (computeRotations)
+import HumanoidAnim.Skeleton.Transform (computeRotations, fetusPoseMuscleAxes, quaternionToAxisAngles)
 
 -- | Muscle value (normalized to -1.0 to 1.0)
 type MuscleValue = Float
@@ -654,12 +654,14 @@ quaternionToMuscles bone quat =
       fetusQ = fetusRotation bone
       -- deltaQ = currentQ * inverse(fetusQ) gives rotation from Fetus Position to current
       deltaQ = quaternionMul quat (quaternionInverse fetusQ)
-      -- Extract euler angles from the delta quaternion
-      -- quaternionToEulerXYZ returns angles in Unity convention:
+      -- Get the muscle axes for this bone in Fetus Pose
+      axes = fetusPoseMuscleAxes bone
+      -- Extract rotation angles around the bone's local axes
+      -- quaternionToAxisAngles returns angles around the bone's specific axes:
       --   rotX = rotation around X-axis (Twist)
-      --   rotY = rotation around Y-axis (Side/In-Out)
-      --   rotZ = rotation around Z-axis (Front-Back/Stretch)
-      (rotX, rotY, rotZ) = quaternionToEulerXYZ deltaQ
+      --   rotY = rotation around Y-axis (Spread/In-Out)
+      --   rotZ = rotation around Z-axis (Stretch/Front-Back/Down-Up)
+      (rotX, rotY, rotZ) = quaternionToAxisAngles axes deltaQ
 
       -- Apply signFlip from boneMuscleDatabase for left/right symmetry
       (adjRotX, adjRotY, adjRotZ) = applySignFlips bone rotX rotY rotZ
@@ -720,25 +722,15 @@ quaternionToMuscles bone quat =
     toMuscle :: MuscleId -> Float -> (MuscleId, MuscleValue)
     toMuscle mid angle =
       let MuscleRange minA maxA = muscleDefaultRange mid
-          center = muscleCenter mid
-          -- Convert angle (in degrees) to muscle value
-          -- Using the documented formula from unity_humanoid_center_of_mass.md:
-          --   if angle >= center: muscle = (angle - center) / max
-          --   else:               muscle = (angle - center) / (-min)
-          relativeAngle = angle - center
-          normalized = if relativeAngle >= 0
-                       then clampF 0 1 (relativeAngle / maxA)
-                       else clampF (-1) 0 (relativeAngle / (-minA))
+          -- The input angle is already relative to Fetus Position (deltaQ),
+          -- so no need to subtract muscleCenter.
+          -- Simply normalize by the range:
+          --   if angle >= 0: muscle = angle / max
+          --   else:          muscle = angle / (-min)
+          normalized = if angle >= 0
+                       then clampF 0 1 (angle / maxA)
+                       else clampF (-1) 0 (angle / (-minA))
       in (mid, normalized)
-
-    -- Check if muscle is a "Stretch" type (uses 0-1 range instead of -1-1)
-    isStretchMuscle :: MuscleId -> Bool
-    isStretchMuscle m = case m of
-      LeftForearmStretch -> True
-      RightForearmStretch -> True
-      LeftLegStretch -> True
-      RightLegStretch -> True
-      _ -> False
 
 -- | Convert muscle values back to quaternion
 musclesToQuaternion :: HumanoidBone -> [(MuscleId, MuscleValue)] -> Quaternion Float
@@ -760,29 +752,6 @@ musclesToQuaternion bone muscleValues =
     -- Default: identity
     _ -> Quaternion 1 (V3 0 0 0)
 
--- | Convert quaternion to Euler angles in XYZ order (Unity convention)
--- Returns (rotX, rotY, rotZ) in degrees
--- Unity uses left-handed coordinate system with XYZ intrinsic rotation order
-quaternionToEulerXYZ :: Quaternion Float -> (Float, Float, Float)
-quaternionToEulerXYZ (Quaternion w (V3 x y z)) =
-  let -- Rotation around X-axis (Twist/Roll)
-      sinX = 2 * (w * x - y * z)
-      cosX = 1 - 2 * (x * x + z * z)
-      rotX = atan2 sinX cosX
-
-      -- Rotation around Y-axis (Side/Tilt)
-      sinY = 2 * (w * y + x * z)
-      rotY = if abs sinY >= 1
-             then signum sinY * (pi / 2)
-             else asin sinY
-
-      -- Rotation around Z-axis (Front-Back/Stretch)
-      sinZ = 2 * (w * z - x * y)
-      cosZ = 1 - 2 * (y * y + z * z)
-      rotZ = atan2 sinZ cosZ
-
-  in (toDegrees rotX, toDegrees rotY, toDegrees rotZ)
-
 -- | Convert Euler angles (pitch, yaw, roll) in degrees to quaternion
 eulerToQuaternion :: Float -> Float -> Float -> Quaternion Float
 eulerToQuaternion pitchDeg yawDeg rollDeg =
@@ -803,10 +772,6 @@ eulerToQuaternion pitchDeg yawDeg rollDeg =
       z = cr * cp * sy - sr * sp * cy
 
   in Quaternion w (V3 x y z)
-
--- | Convert radians to degrees
-toDegrees :: Float -> Float
-toDegrees rad = rad * 180 / pi
 
 -- | Convert degrees to radians
 toRadians :: Float -> Float
