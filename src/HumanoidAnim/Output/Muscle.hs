@@ -29,6 +29,7 @@ module HumanoidAnim.Output.Muscle
   , boneToMuscles
   , positionToMuscles
   , fetusDirection
+  , fetusRotation
   ) where
 
 import qualified Data.Map.Strict as Map
@@ -365,6 +366,43 @@ muscleDefaultRange mid = case mid of
   -- Fingers (all similar range)
   _ -> MuscleRange (-20) 20  -- Default for fingers
 
+-- | Get the center angle (Muscle=0 angle) for a muscle
+--
+-- From unity_humanoid_center_of_mass.md:
+--   - Most muscles have center=0 (Muscle=0 at T-pose angle 0)
+--   - Some muscles have non-zero center due to asymmetric range
+--
+-- Key values from documentation:
+--   - Upper Leg Front-Back: center = -30 (T-Pose Muscle = 0.6)
+--   - Lower Leg Stretch: center = -80 (T-Pose = fully extended)
+--   - Arm Down-Up: center = -40 (T-Pose Muscle = 0.4)
+--   - Arm Front-Back: center = -30 (T-Pose Muscle = 0.3)
+--   - Forearm Stretch: center = -80 (T-Pose = fully extended)
+muscleCenter :: MuscleId -> Float
+muscleCenter mid = case mid of
+  -- Upper Leg Front-Back: center = -30
+  LeftUpperLegFrontBack  -> (-30)
+  RightUpperLegFrontBack -> (-30)
+
+  -- Lower Leg Stretch: center = -80
+  LeftLegStretch  -> (-80)
+  RightLegStretch -> (-80)
+
+  -- Arm Down-Up: center = -40
+  LeftArmDownUp  -> (-40)
+  RightArmDownUp -> (-40)
+
+  -- Arm Front-Back: center = -30
+  LeftArmFrontBack  -> (-30)
+  RightArmFrontBack -> (-30)
+
+  -- Forearm Stretch: center = -80
+  LeftForearmStretch  -> (-80)
+  RightForearmStretch -> (-80)
+
+  -- All other muscles: center = 0
+  _ -> 0
+
 -- | Get the muscles associated with a bone
 boneToMuscles :: HumanoidBone -> [MuscleId]
 boneToMuscles bone = case bone of
@@ -442,16 +480,15 @@ boneToMuscles bone = case bone of
 -- | Measurement plane for angle calculation
 -- Each plane defines how to project the bone direction to calculate angles
 data MeasurementPlane
-  = SagittalPlane     -- ^ YZ plane - measures Front-Back angles
-  | FrontalPlane      -- ^ XY plane - measures In-Out / Left-Right angles
-  | TwistAxis         -- ^ Rotation around bone axis (cannot be determined from position)
+  = SagittalPlane           -- ^ YZ plane - measures Front-Back angles
+  | FrontalPlane Bool       -- ^ XY plane - measures In-Out / Left-Right angles. Bool = signFlip
+  | TwistAxis               -- ^ Rotation around bone axis (cannot be determined from position)
   deriving stock (Show, Eq)
 
 -- | Configuration for a single muscle axis
 data MuscleAxisConfig = MuscleAxisConfig
   { macMuscleId :: MuscleId           -- ^ The muscle ID for this axis
   , macPlane :: MeasurementPlane      -- ^ Which plane to measure angle in
-  , macSignFlip :: Bool               -- ^ Whether to flip the sign for this side
   } deriving stock (Show, Eq)
 
 -- | Complete muscle configuration for a bone
@@ -466,21 +503,24 @@ data BoneMuscleConfig = BoneMuscleConfig
 boneMuscleDatabase :: [BoneMuscleConfig]
 boneMuscleDatabase =
   -- Upper Legs
+  -- In-Out: 内側(-1) ↔ 外側(+1)
+  -- Right leg: outward = +X, so no flip needed
+  -- Left leg: outward = -X, so flip needed to make outward = positive
   [ BoneMuscleConfig
       { bmcBone = RightUpperLeg
       , bmcAxes =
-          [ MuscleAxisConfig RightUpperLegFrontBack SagittalPlane False
-          , MuscleAxisConfig RightUpperLegInOut FrontalPlane True  -- Right: flip for outward = positive
-          , MuscleAxisConfig RightUpperLegTwistInOut TwistAxis False
+          [ MuscleAxisConfig RightUpperLegFrontBack SagittalPlane
+          , MuscleAxisConfig RightUpperLegInOut (FrontalPlane False)  -- Right: no flip, +X = outward = positive
+          , MuscleAxisConfig RightUpperLegTwistInOut TwistAxis
           ]
       , bmcIsRight = True
       }
   , BoneMuscleConfig
       { bmcBone = LeftUpperLeg
       , bmcAxes =
-          [ MuscleAxisConfig LeftUpperLegFrontBack SagittalPlane False
-          , MuscleAxisConfig LeftUpperLegInOut FrontalPlane False
-          , MuscleAxisConfig LeftUpperLegTwistInOut TwistAxis False
+          [ MuscleAxisConfig LeftUpperLegFrontBack SagittalPlane
+          , MuscleAxisConfig LeftUpperLegInOut (FrontalPlane True)   -- Left: flip, -X = outward, flip to positive
+          , MuscleAxisConfig LeftUpperLegTwistInOut TwistAxis
           ]
       , bmcIsRight = False
       }
@@ -489,18 +529,18 @@ boneMuscleDatabase =
   , BoneMuscleConfig
       { bmcBone = RightUpperArm
       , bmcAxes =
-          [ MuscleAxisConfig RightArmDownUp FrontalPlane False
-          , MuscleAxisConfig RightArmFrontBack SagittalPlane False
-          , MuscleAxisConfig RightArmTwistInOut TwistAxis False
+          [ MuscleAxisConfig RightArmDownUp (FrontalPlane False)
+          , MuscleAxisConfig RightArmFrontBack SagittalPlane
+          , MuscleAxisConfig RightArmTwistInOut TwistAxis
           ]
       , bmcIsRight = True
       }
   , BoneMuscleConfig
       { bmcBone = LeftUpperArm
       , bmcAxes =
-          [ MuscleAxisConfig LeftArmDownUp FrontalPlane False
-          , MuscleAxisConfig LeftArmFrontBack SagittalPlane False
-          , MuscleAxisConfig LeftArmTwistInOut TwistAxis False
+          [ MuscleAxisConfig LeftArmDownUp (FrontalPlane False)
+          , MuscleAxisConfig LeftArmFrontBack SagittalPlane
+          , MuscleAxisConfig LeftArmTwistInOut TwistAxis
           ]
       , bmcIsRight = False
       }
@@ -509,16 +549,16 @@ boneMuscleDatabase =
   , BoneMuscleConfig
       { bmcBone = RightLowerLeg
       , bmcAxes =
-          [ MuscleAxisConfig RightLegStretch SagittalPlane False
-          , MuscleAxisConfig RightLegTwistInOut TwistAxis False
+          [ MuscleAxisConfig RightLegStretch SagittalPlane
+          , MuscleAxisConfig RightLegTwistInOut TwistAxis
           ]
       , bmcIsRight = True
       }
   , BoneMuscleConfig
       { bmcBone = LeftLowerLeg
       , bmcAxes =
-          [ MuscleAxisConfig LeftLegStretch SagittalPlane False
-          , MuscleAxisConfig LeftLegTwistInOut TwistAxis False
+          [ MuscleAxisConfig LeftLegStretch SagittalPlane
+          , MuscleAxisConfig LeftLegTwistInOut TwistAxis
           ]
       , bmcIsRight = False
       }
@@ -527,16 +567,16 @@ boneMuscleDatabase =
   , BoneMuscleConfig
       { bmcBone = RightLowerArm
       , bmcAxes =
-          [ MuscleAxisConfig RightForearmStretch SagittalPlane False
-          , MuscleAxisConfig RightForearmTwistInOut TwistAxis False
+          [ MuscleAxisConfig RightForearmStretch SagittalPlane
+          , MuscleAxisConfig RightForearmTwistInOut TwistAxis
           ]
       , bmcIsRight = True
       }
   , BoneMuscleConfig
       { bmcBone = LeftLowerArm
       , bmcAxes =
-          [ MuscleAxisConfig LeftForearmStretch SagittalPlane False
-          , MuscleAxisConfig LeftForearmTwistInOut TwistAxis False
+          [ MuscleAxisConfig LeftForearmStretch SagittalPlane
+          , MuscleAxisConfig LeftForearmTwistInOut TwistAxis
           ]
       , bmcIsRight = False
       }
@@ -805,24 +845,59 @@ fetusDirection bone =
 
 -- | Convert bone positions directly to muscle values
 --
--- This function calculates muscle values geometrically from bone positions,
--- using the bone muscle database for configuration. Each axis is computed
--- based on the angle difference from Fetus Position in the appropriate plane.
+-- Unity Humanoid Muscle specification:
+--   - Muscle value is measured in the bone's LOCAL coordinate system
+--   - The local coordinate system is defined by the PARENT bone's current rotation
+--   - When parent rotates, the local coordinate system rotates with it
+--   - Muscle 0 = Fetus pose direction (reference)
+--   - Z-axis rotation (Down-Up) = rotation in XY plane of local coords
 --
--- Muscle value 0 = Fetus Position (reference)
--- Muscle value is the relative angle from Fetus, mapped to [-1, 1] range
+-- Algorithm:
+--   1. Compute current direction in global coordinates (child - parent)
+--   2. Transform both current and Fetus directions to parent's local coordinate system
+--   3. Compute angle difference between them in the appropriate plane
+--   4. Map angle to Muscle value [-1, 1]
 positionToMuscles
-  :: HumanoidBone           -- ^ Target bone
-  -> V3 Float               -- ^ Parent bone position (e.g., hip for upper leg)
-  -> V3 Float               -- ^ Child bone position (e.g., knee for upper leg)
-  -> V3 Float               -- ^ Fetus position direction (reference)
+  :: HumanoidBone           -- ^ Target bone (e.g., RightUpperArm)
+  -> V3 Float               -- ^ Parent bone position (global coords)
+  -> V3 Float               -- ^ Child bone position (global coords)
+  -> V3 Float               -- ^ Fetus direction (global coords, reference)
+  -> Quaternion Float       -- ^ Parent bone's current rotation (defines local coord system)
   -> [(MuscleId, MuscleValue)]
-positionToMuscles bone parentPos childPos fetusDir =
+positionToMuscles bone parentPos childPos fetusDir parentRot =
   case findBoneConfig bone of
-    Nothing -> []  -- Fall back to quaternion-based calculation
+    Nothing -> []
     Just config ->
-      let dir = childPos - parentPos
-      in computeMusclesFromConfig config dir fetusDir
+      let -- Current direction in global coordinates
+          currentDirGlobal = childPos - parentPos
+
+          -- Transform both directions to parent's local coordinate system
+          -- Using inverse of parent rotation transforms global -> local
+          currentDirLocal = rotateByInverse parentRot currentDirGlobal
+          fetusDirLocal = rotateByInverse parentRot fetusDir
+
+      in computeMusclesFromConfig config currentDirLocal fetusDirLocal
+
+-- | Rotate a vector by the inverse of a quaternion
+-- This transforms from global to local coordinates
+rotateByInverse :: Quaternion Float -> V3 Float -> V3 Float
+rotateByInverse q v = rotateV (conjugate q) v
+  where
+    conjugate (Quaternion w (V3 x y z)) = Quaternion w (V3 (-x) (-y) (-z))
+
+-- | Rotate a vector by a quaternion
+rotateV :: Quaternion Float -> V3 Float -> V3 Float
+rotateV (Quaternion qw (V3 qx qy qz)) (V3 vx vy vz) =
+  let -- q * v (treating v as quaternion with w=0)
+      tw = -qx*vx - qy*vy - qz*vz
+      tx =  qw*vx + qy*vz - qz*vy
+      ty =  qw*vy + qz*vx - qx*vz
+      tz =  qw*vz + qx*vy - qy*vx
+      -- (q * v) * q^(-1) = (q * v) * conjugate(q)
+      rx = -tw*(-qx) + tx*qw - ty*(-qz) + tz*(-qy)
+      ry = -tw*(-qy) + ty*qw - tz*(-qx) + tx*(-qz)
+      rz = -tw*(-qz) + tz*qw - tx*(-qy) + ty*(-qx)
+  in V3 rx ry rz
 
 -- | Compute muscles from bone configuration
 -- This is the unified function that handles all bone types
@@ -844,13 +919,12 @@ computeAxisMuscle
 computeAxisMuscle config dir fetusDir axisConfig =
   let muscleId = macMuscleId axisConfig
       plane = macPlane axisConfig
-      signFlip = macSignFlip axisConfig
       isRight = bmcIsRight config
 
       -- Calculate angle based on measurement plane
       angle = case plane of
         SagittalPlane -> computeSagittalAngle dir fetusDir
-        FrontalPlane -> computeFrontalAngle dir fetusDir isRight signFlip
+        FrontalPlane signFlip -> computeFrontalAngle dir fetusDir isRight signFlip
         TwistAxis -> 0  -- Cannot determine from position
 
       -- Map angle to muscle value
@@ -858,147 +932,113 @@ computeAxisMuscle config dir fetusDir axisConfig =
 
   in (muscleId, muscleValue)
 
+-- | Calculate signed angle between two vectors around a specified axis
+-- Uses cross product to determine sign
+signedAngleBetween :: V3 Float -> V3 Float -> V3 Float -> Float
+signedAngleBetween from to axis =
+  let -- Normalize vectors
+      fromN = normalizeV from
+      toN = normalizeV to
+      axisN = normalizeV axis
+      -- Angle magnitude via dot product
+      dotP = dotV fromN toN
+      angleMag = acos (max (-1) (min 1 dotP)) * 180 / pi
+      -- Sign via cross product dot with axis
+      crossP = crossV fromN toN
+      sign = if dotV crossP axisN >= 0 then 1 else (-1)
+  in sign * angleMag
+
+-- | Normalize a vector
+normalizeV :: V3 Float -> V3 Float
+normalizeV v@(V3 x y z) =
+  let m = sqrt (x*x + y*y + z*z)
+  in if m > 0.0001 then V3 (x/m) (y/m) (z/m) else v
+
+-- | Dot product of two vectors
+dotV :: V3 Float -> V3 Float -> Float
+dotV (V3 x1 y1 z1) (V3 x2 y2 z2) = x1*x2 + y1*y2 + z1*z2
+
+-- | Cross product of two vectors
+crossV :: V3 Float -> V3 Float -> V3 Float
+crossV (V3 x1 y1 z1) (V3 x2 y2 z2) =
+  V3 (y1*z2 - z1*y2) (z1*x2 - x1*z2) (x1*y2 - y1*x2)
+
 -- | Compute angle in sagittal plane (YZ plane) relative to Fetus Position
 -- Used for Front-Back and Stretch muscles
 -- Returns the angle difference from Fetus direction
+--
+-- In local coordinates (after parent rotation is applied):
+--   Y-axis = bone's "up" direction
+--   Z-axis = bone's "forward" direction
+--
+-- Front-Back measures rotation around Y-axis (rotation in YZ plane)
 computeSagittalAngle :: V3 Float -> V3 Float -> Float
 computeSagittalAngle dir fetusDir =
-  let V3 _ dy dz = dir
-      V3 _ fdy fdz = fetusDir
-
-      -- Current angle from vertical (-Y) in sagittal plane
-      -- atan2(-z, -y) measures angle from -Y toward -Z (forward = negative)
-      currentAngle = atan2 (-dz) (-dy) * 180 / pi
-      fetusAngle = atan2 (-fdz) (-fdy) * 180 / pi
-
-      -- Return relative angle from Fetus
-  in currentAngle - fetusAngle
+  signedAngleBetween fetusDir dir (V3 1 0 0)  -- Rotation axis is X
 
 -- | Compute angle in frontal plane (XY plane) relative to Fetus Position
--- Used for In-Out and Left-Right muscles
--- Returns the angle difference from Fetus direction
+-- Used for Down-Up muscles (arms and legs)
+--
+-- Unity specification (from docs):
+--   - Down-Up is Z-axis rotation in the bone's local space
+--   - Muscle -1 = Down / first word of muscle name
+--   - Muscle +1 = Up / second word of muscle name
+--   - Fetus pose = Muscle 0
+--
+-- In local coordinates:
+--   Z-axis rotation = rotation in XY plane
+--   We measure the angle from Fetus direction to current direction
+--   projected onto the XY plane
+--
+-- Parameters:
+--   signFlip: if True, negate the final angle (for left/right symmetry)
 computeFrontalAngle :: V3 Float -> V3 Float -> Bool -> Bool -> Float
 computeFrontalAngle dir fetusDir _isRight signFlip =
+  -- Project onto XY plane (ignore Z component for Z-axis rotation)
   let V3 dx dy _ = dir
       V3 fdx fdy _ = fetusDir
 
-      -- Adjust X based on side for consistent In-Out convention
-      -- For right side bones, we may need to flip X so outward = positive
-      adjustedDx = if signFlip then (-dx) else dx
-      adjustedFdx = if signFlip then (-fdx) else fdx
+      -- Angle of current direction in XY plane (from +X axis, counterclockwise)
+      currentAngle = atan2 dy dx * 180 / pi
 
-      -- Current angle from vertical (-Y) in frontal plane
-      currentAngle = atan2 adjustedDx (-dy) * 180 / pi
-      fetusAngle = atan2 adjustedFdx (-fdy) * 180 / pi
+      -- Angle of Fetus direction in XY plane
+      fetusAngle = atan2 fdy fdx * 180 / pi
 
-      -- Return relative angle from Fetus
-  in currentAngle - fetusAngle
+      -- Relative angle (how much we rotated from Fetus)
+      rawDelta = currentAngle - fetusAngle
+
+      -- Normalize to [-180, 180]
+      delta = if rawDelta > 180 then rawDelta - 360
+              else if rawDelta < (-180) then rawDelta + 360
+              else rawDelta
+
+      -- Apply sign flip for left/right symmetry
+      finalDelta = if signFlip then -delta else delta
+
+  in finalDelta
 
 -- | Convert angle (in degrees) to muscle value
--- Based on Unity Humanoid documentation (see unity_humanoid_center_of_mass.md)
 --
--- The confirmed formula from Unity analysis:
+-- The input angleDeg is the absolute angle in the bone's local coordinate system.
+-- The muscle value is calculated relative to the center angle.
+--
+-- From unity_humanoid_center_of_mass.md:
 --   if angle >= center:
 --       muscle = (angle - center) / max
 --   else:
 --       muscle = (angle - center) / (-min)
 --
--- Where:
---   min = negative direction max angle (e.g., -90 for Upper Leg Front-Back)
---   max = positive direction max angle (e.g., +50 for Upper Leg Front-Back)
---   center = angle where Muscle = 0 (e.g., -30 for Upper Leg Front-Back)
---
--- The input angleDeg is relative to Fetus Position (0 = at Fetus).
--- We need to convert to absolute angle first, then apply the formula.
---
--- For Upper Leg Front-Back:
---   Fetus Position ≈ 45° forward (absolute angle = -45°)
---   center = -30°
---   When leg is straight down (angleDeg = 45°):
---     absAngle = 45 + (-45) = 0° (absolute)
---     muscle = (0 - (-30)) / 50 = 30/50 = 0.6 ✓ (matches T-Pose muscle value!)
+-- Examples:
+--   Right Arm Down-Up: center=-40, min=-60, max=100
+--     angle=-40 (Fetus) -> muscle = 0
+--     angle=60 (arm up) -> muscle = (60 - (-40)) / 100 = 1.0
+--     angle=-100 (arm down) -> muscle = (-100 - (-40)) / 60 = -1.0
 angleToMuscle :: MuscleId -> Float -> MuscleValue
 angleToMuscle muscleId angleDeg =
   let MuscleRange minA maxA = muscleDefaultRange muscleId
-      -- Get the center angle for this muscle (where muscle = 0)
-      center = muscleCenterAngle muscleId
-      -- Get Fetus Position absolute angle
-      -- Fetus Position is calculated from the skeleton, we need its absolute angle
-      fetusAbsAngle = fetusAbsoluteAngle muscleId
-      -- Convert relative angle to absolute
-      absAngle = angleDeg + fetusAbsAngle
-  in if isStretchMuscle' muscleId
-     then -- Stretch muscles: special handling
-          -- muscle = 1 at max (extended), muscle = -1 at min (bent)
-          -- center = -80 for Stretch muscles
-          let stretchCenter = -80  -- center for Stretch muscles
-          in if absAngle >= stretchCenter
-             then clampF (-1) 1 ((absAngle - stretchCenter) / maxA)
-             else clampF (-1) 1 ((absAngle - stretchCenter) / (-minA))
-     else -- Normal muscles: asymmetric mapping around center
-          -- muscle = (angle - center) / max  if angle >= center
-          -- muscle = (angle - center) / (-min)  if angle < center
-          if absAngle >= center
-          then clampF 0 1 ((absAngle - center) / maxA)
-          else clampF (-1) 0 ((absAngle - center) / (-minA))
-  where
-    isStretchMuscle' :: MuscleId -> Bool
-    isStretchMuscle' m = case m of
-      LeftForearmStretch -> True
-      RightForearmStretch -> True
-      LeftLegStretch -> True
-      RightLegStretch -> True
-      _ -> False
-
--- | Fetus Position absolute angle for each muscle (in degrees)
--- This is the angle of the bone in Fetus Position relative to the reference axis
--- (vertical for legs, horizontal for arms)
---
--- Calculated from defaultRestPositions in Config.hs
-fetusAbsoluteAngle :: MuscleId -> Float
-fetusAbsoluteAngle mid = case mid of
-  -- Upper Leg: Fetus has legs ~45° forward
-  LeftUpperLegFrontBack  -> -45
-  RightUpperLegFrontBack -> -45
-  LeftUpperLegInOut  -> 5
-  RightUpperLegInOut -> 5
-  -- Upper Arm: Fetus has arms hanging down
-  LeftArmDownUp  -> -70  -- arms point mostly down in Fetus
-  RightArmDownUp -> -70
-  LeftArmFrontBack  -> 0  -- arms at side, no front/back angle
-  RightArmFrontBack -> 0
-  -- Default: 0
-  _ -> 0
-
--- | Center angle for each muscle (in degrees)
--- This is the angle where Muscle = 0
--- Based on Unity Humanoid documentation analysis (see unity_humanoid_center_of_mass.md)
---
--- Key insight: T-Pose ≠ Muscle 0 for many muscles
--- For example:
---   Upper Leg Front-Back: T-Pose = 0° (straight down), Muscle = 0.6
---   center = -30° (30° forward from vertical)
---
--- The relationship is:
---   if muscle >= 0: angle = center + muscle × max
---   else:           angle = center + muscle × (-min)
-muscleCenterAngle :: MuscleId -> Float
-muscleCenterAngle mid = case mid of
-  -- Upper Leg Front-Back: center = -30° (30° forward)
-  -- T-Pose (straight down, angle=0) has muscle=0.6
-  LeftUpperLegFrontBack  -> -30
-  RightUpperLegFrontBack -> -30
-  -- Upper Leg In-Out: center = 0°
-  LeftUpperLegInOut  -> 0
-  RightUpperLegInOut -> 0
-  -- Upper Arm Down-Up: center = -40° (40° below horizontal)
-  -- T-Pose (horizontal, angle=0) has muscle=0.4
-  LeftArmDownUp  -> -40
-  RightArmDownUp -> -40
-  -- Upper Arm Front-Back: center = -30° (30° forward)
-  -- T-Pose has muscle=0.3
-  LeftArmFrontBack  -> -30
-  RightArmFrontBack -> -30
-  -- Default: center = 0 (symmetric muscles have center at 0)
-  _ -> 0
+      center = muscleCenter muscleId
+      relativeAngle = angleDeg - center
+  in if relativeAngle >= 0
+     then clampF 0 1 (relativeAngle / maxA)
+     else clampF (-1) 0 (relativeAngle / (-minA))
 
