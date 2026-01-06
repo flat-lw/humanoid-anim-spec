@@ -7,15 +7,22 @@
 -- Command-line interface for the humanoid animation generator.
 module Main (main) where
 
-import Control.Monad (when, forM_)
-import Data.Text (Text)
+import Control.Monad (when, forM_, forM)
+import Data.List (isInfixOf)
 import qualified Data.Text as T
 import qualified Data.Text.IO as TIO
+import qualified Data.Map.Strict as Map
+import Data.Maybe (mapMaybe)
 import Options.Applicative
 import System.Exit (exitFailure, exitSuccess)
 import System.FilePath (takeExtension)
 
 import HumanoidAnim
+import HumanoidAnim.Input.UnityAnim
+import HumanoidAnim.Output.Muscle (musclesToPose, musclesToTransforms)
+import HumanoidAnim.IK.Core (IKInput(..), IKOutput(..))
+import HumanoidAnim.IK.TwoBone (solveTwoBone, defaultTwoBoneConfig)
+import HumanoidAnim.Skeleton.Transform (computeRotations)
 
 -- | CLI command types
 data Command
@@ -23,6 +30,7 @@ data Command
   | Validate ValidateOpts
   | Convert ConvertOpts
   | Info InfoOpts
+  | Retarget RetargetOpts
   deriving stock (Show)
 
 -- | Options for generate command
@@ -60,6 +68,15 @@ data InfoOpts = InfoOpts
   , infoHierarchy :: Bool
   } deriving stock (Show)
 
+-- | Options for retarget command
+data RetargetOpts = RetargetOpts
+  { rtInput :: FilePath
+  , rtOutput :: FilePath
+  , rtFixedBones :: [String]
+  , rtEffectors :: [String]
+  , rtVerbose :: Bool
+  } deriving stock (Show)
+
 -- | Main entry point
 main :: IO ()
 main = do
@@ -69,6 +86,7 @@ main = do
     Validate valOpts -> runValidate valOpts
     Convert convOpts -> runConvert convOpts
     Info infoOpts -> runInfo infoOpts
+    Retarget rtOpts -> runRetarget rtOpts
   where
     opts = info (commandParser <**> helper)
       ( fullDesc
@@ -91,6 +109,9 @@ commandParser = subparser
  <> command "info"
       (info (Info <$> infoOptsParser)
             (progDesc "Show skeleton information"))
+ <> command "retarget"
+      (info (Retarget <$> retargetOptsParser)
+            (progDesc "Retarget animation with IK constraints"))
   )
 
 -- | Parse generate options
@@ -203,6 +224,37 @@ infoOptsParser = InfoOpts
   <*> switch
       ( long "hierarchy"
      <> help "Show bone hierarchy"
+      )
+
+-- | Parse retarget options
+retargetOptsParser :: Parser RetargetOpts
+retargetOptsParser = RetargetOpts
+  <$> strOption
+      ( long "input"
+     <> short 'i'
+     <> metavar "FILE"
+     <> help "Input Unity .anim file"
+      )
+  <*> strOption
+      ( long "output"
+     <> short 'o'
+     <> metavar "FILE"
+     <> help "Output Unity .anim file"
+      )
+  <*> many (strOption
+      ( long "fix"
+     <> metavar "BONE"
+     <> help "Fixed bone (can specify multiple times)"
+      ))
+  <*> many (strOption
+      ( long "effector"
+     <> metavar "BONE"
+     <> help "Effector bone (can specify multiple times)"
+      ))
+  <*> switch
+      ( long "verbose"
+     <> short 'v'
+     <> help "Verbose output"
       )
 
 -- | Run generate command
@@ -391,3 +443,141 @@ printHierarchy indent bone = do
   let children = [b | b <- bonesForDetail StandardSkeleton
                     , boneParent b == Just bone]
   forM_ children $ printHierarchy (indent + 1)
+
+-- | Run retarget command
+runRetarget :: RetargetOpts -> IO ()
+runRetarget opts = do
+  let inputPath = rtInput opts
+      outputPath = rtOutput opts
+      fixedBoneNames = rtFixedBones opts
+      effectorNames = rtEffectors opts
+      verbose = rtVerbose opts
+
+  when verbose $ do
+    putStrLn $ "Input: " ++ inputPath
+    putStrLn $ "Output: " ++ outputPath
+    putStrLn $ "Fixed bones: " ++ show fixedBoneNames
+    putStrLn $ "Effectors: " ++ show effectorNames
+
+  -- Parse bone names
+  let fixedBones = mapMaybe parseBoneName (map T.pack fixedBoneNames)
+      effectorBones = mapMaybe parseBoneName (map T.pack effectorNames)
+
+  when (length fixedBones /= length fixedBoneNames) $ do
+    putStrLn "Warning: Some fixed bone names could not be parsed"
+
+  when (length effectorBones /= length effectorNames) $ do
+    putStrLn "Warning: Some effector bone names could not be parsed"
+
+  -- Load input animation
+  animResult <- loadUnityAnim inputPath
+  case resultValue animResult of
+    Left err -> do
+      TIO.putStrLn $ "Error loading animation: " <> formatError err
+      exitFailure
+
+    Right parsedClip -> do
+      when verbose $ do
+        putStrLn $ "Loaded: " ++ pacName parsedClip
+        putStrLn $ "Duration: " ++ show (pacDuration parsedClip) ++ "s"
+        putStrLn $ "Curves: " ++ show (length (pacFloatCurves parsedClip))
+        putStrLn $ "Parsed fixed bones: " ++ show fixedBones
+        putStrLn $ "Parsed effector bones: " ++ show effectorBones
+
+      -- Build skeleton
+      let skeleton = buildSkeleton defaultSkeletonConfig
+          duration = pacDuration parsedClip
+          sampleRate = pacSampleRate parsedClip
+          numFrames = ceiling (duration * sampleRate) :: Int
+
+      when verbose $ do
+        putStrLn $ "Processing " ++ show numFrames ++ " frames..."
+
+      -- Debug: show input muscle values at t=0
+      when verbose $ do
+        let debugMuscles = sampleAtTime parsedClip 0.0
+        putStrLn "\n=== Input Muscles at t=0 (leg-related) ==="
+        forM_ (filter (\(n,_) -> "Leg" `isInfixOf` n) debugMuscles) $ \(name, val) ->
+          putStrLn $ "  " ++ name ++ ": " ++ show val
+
+      -- Process each frame
+      retargetedFrames <- forM [0 .. numFrames - 1] $ \frameIdx -> do
+        let time = fromIntegral frameIdx / sampleRate
+
+        -- Sample all muscles at this time
+        let muscleValues = sampleAtTime parsedClip time
+            muscleMap = Map.fromList muscleValues
+
+        -- Convert muscle values to bone positions (FK)
+        let pose = musclesToPose muscleMap
+
+        -- Debug first frame
+        when (verbose && frameIdx == 0) $ do
+          putStrLn "\n=== FK Pose at t=0 (legs) ==="
+          forM_ [Hips, RightUpperLeg, RightLowerLeg, RightFoot, LeftUpperLeg, LeftLowerLeg, LeftFoot] $ \bone ->
+            putStrLn $ "  " ++ show bone ++ ": " ++ show (Map.lookup bone pose)
+
+        -- Get fixed positions from the pose
+        let fixedConstraints = [Fixed bone (Map.findWithDefault (V3 0 0 0) bone pose) | bone <- fixedBones]
+
+        -- Get effector target positions from the pose
+        let effectorConstraints = [Effector bone (Map.findWithDefault (V3 0 0 0) bone pose) | bone <- effectorBones]
+
+        -- Apply IK
+        let constraints = fixedConstraints ++ effectorConstraints
+            ikInput = IKInput
+              { ikSkeleton = skeleton
+              , ikInitialPose = pose
+              , ikConstraints = constraints
+              }
+            ikOutput = solveTwoBone defaultTwoBoneConfig ikInput
+            resultPose = ikResultPose ikOutput
+
+        when (verbose && frameIdx `mod` 30 == 0) $ do
+          putStrLn $ "Frame " ++ show frameIdx ++ ": converged=" ++ show (ikConverged ikOutput)
+                     ++ ", error=" ++ show (ikError ikOutput)
+
+        return (time, resultPose)
+
+      when verbose $ do
+        putStrLn $ "Retargeting complete. " ++ show (length retargetedFrames) ++ " frames processed."
+
+      -- Convert IK results to AnimationClip
+      -- If no IK constraints, use musclesToTransforms directly for accurate muscle round-trip
+      -- Otherwise, compute rotations from positions (LookAt-based)
+      let hasIKConstraints = not (null fixedBones) || not (null effectorBones)
+          animFrames = if hasIKConstraints
+            then [ AnimationFrame
+                     { frameTime = t
+                     , framePose = computeRotations skeleton pose Map.empty
+                     }
+                 | (t, pose) <- retargetedFrames
+                 ]
+            else [ AnimationFrame
+                     { frameTime = t
+                     , framePose = fkTransforms
+                     }
+                 | (t, _pose) <- retargetedFrames
+                 , let muscleValues' = sampleAtTime parsedClip t
+                       muscleMap' = Map.fromList muscleValues'
+                       fkTransforms = musclesToTransforms muscleMap'
+                 ]
+          animClip = AnimationClip
+            { clipName = pacName parsedClip ++ "_retargeted"
+            , clipDuration = duration
+            , clipFrameRate = sampleRate
+            , clipFrames = animFrames
+            , clipLoopMode = Once
+            , clipFixedBones = [(bone, Map.findWithDefault (V3 0 0 0) bone (snd (head retargetedFrames))) | bone <- fixedBones]
+            }
+
+      -- Write output
+      let unityOpts = defaultUnityAnimOptions
+            { uaoPrecision = 6
+            , uaoSampleRate = sampleRate
+            }
+      when verbose $ putStrLn $ "Writing output to: " ++ outputPath
+      writeUnityAnim outputPath unityOpts animClip
+
+      putStrLn $ "Successfully retargeted: " ++ outputPath
+      exitSuccess

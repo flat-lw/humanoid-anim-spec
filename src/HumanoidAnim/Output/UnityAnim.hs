@@ -22,6 +22,9 @@ module HumanoidAnim.Output.UnityAnim
   , UnityAnimationClip(..)
   , UnityCurve(..)
   , UnityKeyframe(..)
+
+    -- * Testing (temporary export)
+  , computeLimbMuscle
   ) where
 
 import Data.ByteString (ByteString)

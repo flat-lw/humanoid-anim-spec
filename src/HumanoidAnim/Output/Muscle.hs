@@ -30,14 +30,24 @@ module HumanoidAnim.Output.Muscle
   , positionToMuscles
   , fetusDirection
   , fetusRotation
+  , fetusPositions
+
+    -- * Forward Kinematics
+  , musclesToPose
+  , musclesToTransforms
+  , sampleMusclesToPose
   ) where
 
 import qualified Data.Map.Strict as Map
+import Data.Maybe (fromMaybe)
+import Data.List (sortBy)
+import Data.Ord (comparing)
 import Linear (V3(..), Quaternion(..))
 
-import HumanoidAnim.Skeleton.Bones (HumanoidBone(..))
+import HumanoidAnim.Skeleton.Bones (HumanoidBone(..), allBones)
 import HumanoidAnim.Skeleton.Config (defaultSkeletonConfig, buildSkeleton, Transform(..), Skeleton(..))
-import HumanoidAnim.Skeleton.Transform (computeRotations, fetusPoseMuscleAxes, quaternionToAxisAngles)
+import HumanoidAnim.Skeleton.Hierarchy (boneParent, getDepth)
+import HumanoidAnim.Skeleton.Transform (computeRotations, fetusPoseMuscleAxes, quaternionToAxisAngles, quaternionFromAxisAngle, MuscleAxes(..))
 
 -- | Muscle value (normalized to -1.0 to 1.0)
 type MuscleValue = Float
@@ -1003,3 +1013,295 @@ angleToMuscle muscleId angleDeg =
      then clampF 0 1 (relativeAngle / maxA)
      else clampF (-1) 0 (relativeAngle / (-minA))
 
+-- ============================================================================
+-- Forward Kinematics: Muscle values -> Bone positions
+-- ============================================================================
+
+-- | Convert muscle values to bone positions (Forward Kinematics)
+-- Takes a map of muscle name -> value and returns bone positions
+--
+-- Algorithm:
+--   1. Start from Fetus pose (base positions and rotations)
+--   2. For each bone, compute local rotation from muscle values
+--   3. Propagate rotations down the hierarchy (parent rotation affects child position)
+--   4. Apply rotations to compute world positions
+musclesToPose
+  :: Map.Map String MuscleValue  -- ^ Muscle values by name
+  -> Map.Map HumanoidBone (V3 Float)  -- ^ Bone positions
+musclesToPose muscleMap =
+  let -- Get base Fetus positions
+      basePositions = fetusPositions
+
+      -- Propagate rotations down the hierarchy to get world positions
+      -- Process bones in depth order (parents before children)
+      bonesByDepth = sortBy (comparing getDepth) allBones
+
+      -- Accumulate world rotations and positions
+      (worldPositions, _worldRotations) =
+        foldl propagateBone (basePositions, Map.empty) bonesByDepth
+
+  in worldPositions
+  where
+    -- Propagate rotation to a bone, computing its world position
+    propagateBone
+      :: (Map.Map HumanoidBone (V3 Float), Map.Map HumanoidBone (Quaternion Float))
+      -> HumanoidBone
+      -> (Map.Map HumanoidBone (V3 Float), Map.Map HumanoidBone (Quaternion Float))
+    propagateBone (positions, rotations) bone =
+      let -- Get local rotation for this bone
+          localRot = Map.findWithDefault identityQ bone
+                       (Map.fromList [(b, musclesToLocalRotation b muscleMap) | b <- allBones])
+
+          -- Get parent's world rotation (identity if no parent)
+          parentWorldRot = case boneParent bone of
+            Nothing -> identityQ
+            Just parent -> Map.findWithDefault identityQ parent rotations
+
+          -- World rotation = parent rotation * local rotation
+          worldRot = quaternionMul parentWorldRot localRot
+
+          -- Get the offset from parent in Fetus pose
+          (parentFetusPos, fetusOffset) = case boneParent bone of
+            Nothing -> (V3 0 0 0, Map.findWithDefault (V3 0 0 0) bone fetusPositions)
+            Just parent ->
+              let pPos = Map.findWithDefault (V3 0 0 0) parent fetusPositions
+                  bPos = Map.findWithDefault (V3 0 0 0) bone fetusPositions
+              in (pPos, bPos - pPos)
+
+          -- Get parent's current world position
+          parentWorldPos = case boneParent bone of
+            Nothing -> V3 0 0 0
+            Just parent -> Map.findWithDefault parentFetusPos parent positions
+
+          -- Rotate the offset by parent's world rotation and add to parent position
+          rotatedOffset = rotateV parentWorldRot fetusOffset
+          worldPos = parentWorldPos + rotatedOffset
+
+      in (Map.insert bone worldPos positions, Map.insert bone worldRot rotations)
+
+    identityQ = Quaternion 1 (V3 0 0 0)
+
+-- | Convert muscle values to bone Transforms (position + rotation)
+-- This is the complete FK function that returns both position and rotation.
+-- Unlike musclesToPose, this preserves the rotation information computed from muscles.
+--
+-- The rotation is computed as: fetusRotation(bone) * localRotation
+-- where localRotation is the rotation from muscle values.
+-- This produces a world rotation that quaternionToMuscles can invert correctly.
+musclesToTransforms
+  :: Map.Map String MuscleValue  -- ^ Muscle values by name
+  -> Map.Map HumanoidBone Transform  -- ^ Bone transforms (position + rotation)
+musclesToTransforms muscleMap =
+  let -- Get base Fetus positions
+      basePositions = fetusPositions
+
+      -- Propagate rotations down the hierarchy to get world positions
+      -- Process bones in depth order (parents before children)
+      bonesByDepth = sortBy (comparing getDepth) allBones
+
+      -- Accumulate world rotations and positions
+      (worldPositions, worldRotations) =
+        foldl propagateBone (basePositions, Map.empty) bonesByDepth
+
+  in Map.mapWithKey (\bone pos ->
+       let rot = Map.findWithDefault identityQ bone worldRotations
+       in Transform pos rot) worldPositions
+  where
+    -- Propagate rotation to a bone, computing its world position
+    propagateBone
+      :: (Map.Map HumanoidBone (V3 Float), Map.Map HumanoidBone (Quaternion Float))
+      -> HumanoidBone
+      -> (Map.Map HumanoidBone (V3 Float), Map.Map HumanoidBone (Quaternion Float))
+    propagateBone (positions, rotations) bone =
+      let -- Get local rotation delta for this bone (from muscle values)
+          localRotDelta = Map.findWithDefault identityQ bone
+                       (Map.fromList [(b, musclesToLocalRotation b muscleMap) | b <- allBones])
+
+          -- Get Fetus pose rotation for this bone
+          fetusQ = fetusRotation bone
+
+          -- World rotation = localRotDelta * fetusRotation
+          -- quaternionToMuscles computes: deltaQ = quat * inverse(fetusQ)
+          -- With worldRot = localRotDelta * fetusQ:
+          --   deltaQ = localRotDelta * fetusQ * inverse(fetusQ) = localRotDelta
+          -- This gives us back the local rotation delta, which is what we want
+          worldRot = quaternionMul localRotDelta fetusQ
+
+          -- Get parent's world rotation for position calculation
+          parentWorldRot = case boneParent bone of
+            Nothing -> identityQ
+            Just parent -> Map.findWithDefault identityQ parent rotations
+
+          -- Get the offset from parent in Fetus pose
+          (parentFetusPos, fetusOffset) = case boneParent bone of
+            Nothing -> (V3 0 0 0, Map.findWithDefault (V3 0 0 0) bone fetusPositions)
+            Just parent ->
+              let pPos = Map.findWithDefault (V3 0 0 0) parent fetusPositions
+                  bPos = Map.findWithDefault (V3 0 0 0) bone fetusPositions
+              in (pPos, bPos - pPos)
+
+          -- Get parent's current world position
+          parentWorldPos = case boneParent bone of
+            Nothing -> V3 0 0 0
+            Just parent -> Map.findWithDefault parentFetusPos parent positions
+
+          -- Rotate the offset by parent's world rotation and add to parent position
+          rotatedOffset = rotateV parentWorldRot fetusOffset
+          worldPos = parentWorldPos + rotatedOffset
+
+      in (Map.insert bone worldPos positions, Map.insert bone worldRot rotations)
+
+    identityQ = Quaternion 1 (V3 0 0 0)
+
+-- | Convert muscle values to local rotation for a bone
+-- This is the inverse of quaternionToMuscles.
+-- Uses fetusPoseMuscleAxes to ensure round-trip consistency.
+musclesToLocalRotation :: HumanoidBone -> Map.Map String MuscleValue -> Quaternion Float
+musclesToLocalRotation bone muscleMap =
+  let muscles = boneToMuscles bone
+      axes = fetusPoseMuscleAxes bone
+
+      -- Get muscle value by property name
+      getMuscle :: MuscleId -> Float
+      getMuscle mid = fromMaybe 0 $ Map.lookup (musclePropertyName mid) muscleMap
+
+      -- Convert muscle value to angle (degrees)
+      -- This is the inverse of what quaternionToMuscles.toMuscle does
+      muscleToAngle :: MuscleId -> Float
+      muscleToAngle mid =
+        let value = getMuscle mid
+            MuscleRange minA maxA = muscleDefaultRange mid
+            -- The input value is normalized:
+            --   if value >= 0: value = angle / max
+            --   else:          value = angle / (-min)
+            -- So the inverse is:
+            --   if value >= 0: angle = value * max
+            --   else:          angle = value * (-min)
+        in if value >= 0
+           then value * maxA
+           else value * (-minA)
+
+      -- Apply inverse sign flips
+      -- Since sign flipping is its own inverse (flip(flip(x)) = x), we use applySignFlips directly
+      applyInverseSignFlips = applySignFlips
+
+      -- Get angles for each axis based on bone type
+      -- This must match the structure in quaternionToMuscles
+      (rawRotX, rawRotY, rawRotZ) = case bone of
+        -- Spine bones: [Front-Back, Left-Right, Twist] -> [Z, Y, X]
+        Spine -> case muscles of
+          [fb, lr, tw] -> (muscleToAngle tw, muscleToAngle lr, muscleToAngle fb)
+          _ -> (0, 0, 0)
+        Chest -> case muscles of
+          [fb, lr, tw] -> (muscleToAngle tw, muscleToAngle lr, muscleToAngle fb)
+          _ -> (0, 0, 0)
+        UpperChest -> case muscles of
+          [fb, lr, tw] -> (muscleToAngle tw, muscleToAngle lr, muscleToAngle fb)
+          _ -> (0, 0, 0)
+
+        -- Neck and Head: [Nod, Tilt, Turn] -> [Z, Y, X]
+        Neck -> case muscles of
+          [nod, tilt, turn] -> (muscleToAngle turn, muscleToAngle tilt, muscleToAngle nod)
+          _ -> (0, 0, 0)
+        Head -> case muscles of
+          [nod, tilt, turn] -> (muscleToAngle turn, muscleToAngle tilt, muscleToAngle nod)
+          _ -> (0, 0, 0)
+
+        -- Shoulders: [Down-Up, Front-Back] -> [Z, Y]
+        LeftShoulder -> case muscles of
+          [du, fb] -> (0, muscleToAngle fb, muscleToAngle du)
+          _ -> (0, 0, 0)
+        RightShoulder -> case muscles of
+          [du, fb] -> (0, muscleToAngle fb, muscleToAngle du)
+          _ -> (0, 0, 0)
+
+        -- Upper Arm: [Down-Up, Front-Back, Twist] -> [Z, Y, X]
+        LeftUpperArm -> case muscles of
+          [du, fb, tw] -> (muscleToAngle tw, muscleToAngle fb, muscleToAngle du)
+          _ -> (0, 0, 0)
+        RightUpperArm -> case muscles of
+          [du, fb, tw] -> (muscleToAngle tw, muscleToAngle fb, muscleToAngle du)
+          _ -> (0, 0, 0)
+
+        -- Lower Arm: [Stretch, Twist] -> [Z, X]
+        LeftLowerArm -> case muscles of
+          [st, tw] -> (muscleToAngle tw, 0, muscleToAngle st)
+          _ -> (0, 0, 0)
+        RightLowerArm -> case muscles of
+          [st, tw] -> (muscleToAngle tw, 0, muscleToAngle st)
+          _ -> (0, 0, 0)
+
+        -- Hand: [Down-Up, In-Out] -> [Z, Y]
+        LeftHand -> case muscles of
+          [du, io] -> (0, muscleToAngle io, muscleToAngle du)
+          _ -> (0, 0, 0)
+        RightHand -> case muscles of
+          [du, io] -> (0, muscleToAngle io, muscleToAngle du)
+          _ -> (0, 0, 0)
+
+        -- Upper Leg: [Front-Back, In-Out, Twist] -> [Z, Y, X]
+        LeftUpperLeg -> case muscles of
+          [fb, io, tw] -> (muscleToAngle tw, muscleToAngle io, muscleToAngle fb)
+          _ -> (0, 0, 0)
+        RightUpperLeg -> case muscles of
+          [fb, io, tw] -> (muscleToAngle tw, muscleToAngle io, muscleToAngle fb)
+          _ -> (0, 0, 0)
+
+        -- Lower Leg: [Stretch, Twist] -> [Z, X]
+        LeftLowerLeg -> case muscles of
+          [st, tw] -> (muscleToAngle tw, 0, muscleToAngle st)
+          _ -> (0, 0, 0)
+        RightLowerLeg -> case muscles of
+          [st, tw] -> (muscleToAngle tw, 0, muscleToAngle st)
+          _ -> (0, 0, 0)
+
+        -- Foot: [Up-Down, Twist] -> [Z, X]
+        LeftFoot -> case muscles of
+          [ud, tw] -> (muscleToAngle tw, 0, muscleToAngle ud)
+          _ -> (0, 0, 0)
+        RightFoot -> case muscles of
+          [ud, tw] -> (muscleToAngle tw, 0, muscleToAngle ud)
+          _ -> (0, 0, 0)
+
+        -- Default: no rotation
+        _ -> (0, 0, 0)
+
+      -- Apply inverse sign flips
+      (rotX, rotY, rotZ) = applyInverseSignFlips bone rawRotX rawRotY rawRotZ
+
+      -- Convert to radians
+      toRad deg = deg * pi / 180
+
+      -- Create rotation around each axis using fetusPoseMuscleAxes
+      rotAroundX = quaternionFromAxisAngle (axisX axes) (toRad rotX)
+      rotAroundY = quaternionFromAxisAngle (axisY axes) (toRad rotY)
+      rotAroundZ = quaternionFromAxisAngle (axisZ axes) (toRad rotZ)
+
+  -- Combine rotations: Z * Y * X (to match quaternionToAxisAngles extraction order)
+  in quaternionMul rotAroundZ (quaternionMul rotAroundY rotAroundX)
+
+-- | Sample muscles at a time and convert to bone positions
+-- This is a convenience function for animation retargeting
+sampleMusclesToPose
+  :: [(String, [(Float, MuscleValue)])]  -- ^ Muscle curves: [(name, [(time, value)])]
+  -> Float                                -- ^ Time to sample
+  -> Map.Map HumanoidBone (V3 Float)      -- ^ Bone positions
+sampleMusclesToPose curves time =
+  let -- Sample each muscle at the given time
+      sampleCurve :: [(Float, MuscleValue)] -> MuscleValue
+      sampleCurve [] = 0
+      sampleCurve [(_, v)] = v
+      sampleCurve kfs =
+        let sorted = sortBy (comparing fst) kfs
+            before = filter (\(t, _) -> t <= time) sorted
+            after = filter (\(t, _) -> t > time) sorted
+        in case (before, after) of
+          ([], (_, v):_) -> v
+          (b, []) -> snd (last b)
+          (b, (t2, v2):_) ->
+            let (t1, v1) = last b
+                ratio = if t2 == t1 then 0 else (time - t1) / (t2 - t1)
+            in v1 + ratio * (v2 - v1)
+
+      muscleMap = Map.fromList [(name, sampleCurve kfs) | (name, kfs) <- curves]
+  in musclesToPose muscleMap

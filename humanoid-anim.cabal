@@ -36,12 +36,14 @@ library
                     , HumanoidAnim.Motion.Trajectory
                     , HumanoidAnim.Input.Config
                     , HumanoidAnim.Input.Validation
+                    , HumanoidAnim.Input.UnityAnim
                     , HumanoidAnim.Output.GLTF
                     , HumanoidAnim.Output.Mesh
                     , HumanoidAnim.Output.Muscle
                     , HumanoidAnim.Output.UnityAnim
                     , HumanoidAnim.IK.CCD
                     , HumanoidAnim.IK.Constraints
+                    , HumanoidAnim.IK.Spine
                     , HumanoidAnim.Input.Blender
     build-depends:    base >=4.17 && <5
                     , linear >=1.22 && <2
@@ -75,6 +77,8 @@ executable humanoid-anim
                     , optparse-applicative >=0.17 && <1
                     , text >=2.0 && <3
                     , filepath >=1.4 && <2
+                    , containers >=0.6 && <1
+                    , linear >=1.22 && <2
     hs-source-dirs:   app
     default-language: GHC2021
     default-extensions: OverloadedStrings

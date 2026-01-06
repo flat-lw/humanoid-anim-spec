@@ -588,30 +588,42 @@ clampTargetToJointLimits effector rootPos targetPos maxReach =
                       then if dy >= 0 then 90 else (-90)
                       else atan2 dy horizontalDist * 180 / pi
 
-      -- If already within limits, return original (distance-clamped) target
-      inLimits = currentAngleY >= minAngleY && currentAngleY <= maxAngleY
+      -- Distance-clamped target (no angle clamping)
+      distanceClampedTarget = if dist <= maxReach
+                              then targetPos
+                              else rootPos ^+^ (normalize toTarget ^* maxReach)
 
-  in if inLimits
-     then -- Just clamp distance, keep direction
-          if dist <= maxReach
-          then targetPos
-          else rootPos ^+^ (normalize toTarget ^* maxReach)
-     else -- Need to clamp angle
-          let clampedAngleY = clamp minAngleY maxAngleY currentAngleY
-              clampedAngleRad = clampedAngleY * pi / 180
+      -- Angle-clamped target
+      clampedAngleY = clamp minAngleY maxAngleY currentAngleY
+      clampedAngleRad = clampedAngleY * pi / 180
 
-              -- Preserve horizontal direction (X-Z plane)
-              -- For arm down-up, we want to keep the X direction but adjust Y
-              horizontalDir = if horizontalDist < 0.0001
-                              then V3 1 0 0  -- Default direction if target is directly above/below
-                              else V3 (dx / horizontalDist) 0 (dz / horizontalDist)
+      horizontalDir = if horizontalDist < 0.0001
+                      then V3 1 0 0
+                      else V3 (dx / horizontalDist) 0 (dz / horizontalDist)
 
-              -- New position with clamped angle, keeping original distance
-              newHorizontalDist = clampedDist * cos clampedAngleRad
-              newVerticalDist = clampedDist * sin clampedAngleRad
-              V3 hx _ hz = horizontalDir
+      newHorizontalDist = clampedDist * cos clampedAngleRad
+      newVerticalDist = clampedDist * sin clampedAngleRad
+      V3 hx _ hz = horizontalDir
 
-          in rootPos ^+^ V3 (hx * newHorizontalDist) newVerticalDist (hz * newHorizontalDist)
+      angleClampedTarget = rootPos ^+^ V3 (hx * newHorizontalDist) newVerticalDist (hz * newHorizontalDist)
+
+      -- Calculate blend factor based on how far outside limits
+      -- Use soft margins for smooth transition (5 degrees)
+      softMargin = 5.0
+
+      -- How far outside the limits (0 = inside, positive = outside)
+      overMin = max 0 (minAngleY - currentAngleY)  -- positive when below min
+      overMax = max 0 (currentAngleY - maxAngleY)  -- positive when above max
+      overLimit = max overMin overMax
+
+      -- Blend factor: 0 = use original, 1 = use clamped
+      -- Smoothly transition over the soft margin
+      blendFactor = smoothstep 0 softMargin overLimit
+
+  in lerpV3 distanceClampedTarget angleClampedTarget blendFactor
+  where
+    lerpV3 (V3 x1 y1 z1) (V3 x2 y2 z2) t =
+      V3 (x1 + (x2 - x1) * t) (y1 + (y2 - y1) * t) (z1 + (z2 - z1) * t)
 
 -- | Get Y-axis (Down-Up / Front-Back) joint limits in degrees
 --
